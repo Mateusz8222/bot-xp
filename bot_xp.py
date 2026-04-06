@@ -1,9 +1,10 @@
+import os
 import discord
 from discord.ext import commands, tasks
 import sqlite3
 import time
 
-TOKEN = "TU_WKLEJ_TOKEN"
+TOKEN = os.getenv("TOKEN")
 
 TEXT_POINTS = 2
 TEXT_COOLDOWN = 30
@@ -66,6 +67,9 @@ async def on_message(message):
     if message.author.bot:
         return
 
+    if message.guild is None:
+        return
+
     now = time.time()
     key = (message.guild.id, message.author.id)
 
@@ -91,6 +95,10 @@ async def vc_loop():
 
     for (guild_id, user_id), start in list(vc_times.items()):
         guild = bot.get_guild(guild_id)
+        if guild is None:
+            vc_times.pop((guild_id, user_id), None)
+            continue
+
         member = guild.get_member(user_id)
 
         if not member or not is_active(member):
@@ -107,6 +115,7 @@ async def vc_loop():
 @bot.event
 async def on_ready():
     print(f"Zalogowano jako {bot.user}")
-    vc_loop.start()
+    if not vc_loop.is_running():
+        vc_loop.start()
 
 bot.run(TOKEN)
