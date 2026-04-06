@@ -8,6 +8,7 @@ from discord.ext import commands, tasks
 from discord import app_commands
 
 TOKEN = os.getenv("TOKEN")
+DB_FILE = "xp.db"
 
 # =========================================================
 # ID KANAŁÓW
@@ -21,20 +22,13 @@ LEGEND_TEXT_CHANNEL_ID = 1490791025671803013 # 💎・legenda-czat
 LEGEND_VC_CHANNEL_ID = 1490792255504646407   # 💎・Legenda VC
 
 # =========================================================
-# ID RÓL — TU WKLEJ SWOJE PRAWDZIWE ID
+# ID RÓL
 # =========================================================
-SIGMA_ROLE_ID = 0
-VIP_ROLE_ID = 0
-LEGEND_ROLE_ID = 0
-
-COLOR_BLUE_ROLE_ID = 0
-COLOR_RED_ROLE_ID = 0
-COLOR_GREEN_ROLE_ID = 0
-COLOR_PURPLE_ROLE_ID = 0
-COLOR_GOLD_ROLE_ID = 0
+VIP_ROLE_ID = 1474567627895738388
+LEGEND_ROLE_ID = 1490683484262498335
 
 # =========================================================
-# USTAWIENIA PUNKTÓW
+# USTAWIENIA XP
 # =========================================================
 TEXT_MESSAGES_REQUIRED = 10
 TEXT_POINTS = 2
@@ -46,77 +40,23 @@ VC_POINTS_WITH_ACTIVE = 10
 VIP_MULTIPLIER = 1.20
 LEGEND_MULTIPLIER = 1.40
 
-DB_FILE = "xp.db"
-
 # =========================================================
 # SKLEP
 # =========================================================
 SHOP_ITEMS = {
-    "sigma": {
-        "price": 500,
-        "role_id": SIGMA_ROLE_ID,
-        "type": "rank",
-        "label": "😎 Sigma",
-    },
     "vip": {
         "price": 50000,
         "role_id": VIP_ROLE_ID,
-        "type": "rank",
-        "label": "👑 VIP",
+        "label": "⭐ VIP",
     },
     "legenda": {
         "price": 100000,
         "role_id": LEGEND_ROLE_ID,
-        "type": "rank",
         "label": "💎 LEGENDA",
-    },
-    "niebieski": {
-        "price": 50,
-        "role_id": COLOR_BLUE_ROLE_ID,
-        "type": "color",
-        "label": "🔵 Niebieski",
-    },
-    "czerwony": {
-        "price": 60,
-        "role_id": COLOR_RED_ROLE_ID,
-        "type": "color",
-        "label": "🔴 Czerwony",
-    },
-    "zielony": {
-        "price": 70,
-        "role_id": COLOR_GREEN_ROLE_ID,
-        "type": "color",
-        "label": "🟢 Zielony",
-    },
-    "fioletowy": {
-        "price": 80,
-        "role_id": COLOR_PURPLE_ROLE_ID,
-        "type": "color",
-        "label": "🟣 Fioletowy",
-    },
-    "zloty": {
-        "price": 100,
-        "role_id": COLOR_GOLD_ROLE_ID,
-        "type": "color",
-        "label": "🟡 Złoty",
     },
 }
 
-COLOR_ROLE_IDS = [
-    COLOR_BLUE_ROLE_ID,
-    COLOR_RED_ROLE_ID,
-    COLOR_GREEN_ROLE_ID,
-    COLOR_PURPLE_ROLE_ID,
-    COLOR_GOLD_ROLE_ID,
-]
-
-RANK_ROLE_IDS = [
-    SIGMA_ROLE_ID,
-    VIP_ROLE_ID,
-    LEGEND_ROLE_ID,
-]
-
-# klucz -> channel_id
+# panel_key -> channel_id
 PANEL_CHANNELS = {
     "points": POINTS_CHANNEL_ID,
     "ranking": RANKING_CHANNEL_ID,
@@ -191,6 +131,7 @@ def get_points_row(guild_id: int, user_id: int) -> Optional[sqlite3.Row]:
 
 def update_message_count(guild_id: int, user_id: int) -> int:
     ensure_user_row(guild_id, user_id)
+
     conn = db_connect()
     cur = conn.cursor()
     cur.execute("""
@@ -276,7 +217,6 @@ def get_panel_message(guild_id: int, panel_key: str) -> Optional[sqlite3.Row]:
     conn.close()
     return row
 
-
 # =========================================================
 # BOT
 # =========================================================
@@ -301,16 +241,12 @@ bot = XPBot()
 # =========================================================
 # POMOCNICZE
 # =========================================================
-def valid_role_id(role_id: int) -> bool:
-    return isinstance(role_id, int) and role_id != 0
-
-
 def get_member_multiplier(member: discord.Member) -> float:
     role_ids = {role.id for role in member.roles}
 
-    if valid_role_id(LEGEND_ROLE_ID) and LEGEND_ROLE_ID in role_ids:
+    if LEGEND_ROLE_ID in role_ids:
         return LEGEND_MULTIPLIER
-    if valid_role_id(VIP_ROLE_ID) and VIP_ROLE_ID in role_ids:
+    if VIP_ROLE_ID in role_ids:
         return VIP_MULTIPLIER
     return 1.0
 
@@ -359,12 +295,10 @@ def get_rank_prefix(member: Optional[discord.Member]) -> str:
 
     role_ids = {role.id for role in member.roles}
 
-    if valid_role_id(LEGEND_ROLE_ID) and LEGEND_ROLE_ID in role_ids:
+    if LEGEND_ROLE_ID in role_ids:
         return "💎 "
-    if valid_role_id(VIP_ROLE_ID) and VIP_ROLE_ID in role_ids:
-        return "👑 "
-    if valid_role_id(SIGMA_ROLE_ID) and SIGMA_ROLE_ID in role_ids:
-        return "😎 "
+    if VIP_ROLE_ID in role_ids:
+        return "⭐ "
     return ""
 
 
@@ -423,7 +357,7 @@ def xpinfo_embed() -> discord.Embed:
         inline=False
     )
     embed.add_field(
-        name="👑 Bonusy rang",
+        name="⭐ Bonusy rang",
         value="VIP: +20%\nLEGENDA: +40%",
         inline=False
     )
@@ -438,25 +372,12 @@ def xpinfo_embed() -> discord.Embed:
 def shop_embed() -> discord.Embed:
     embed = discord.Embed(
         title="🛒 Sklep punktów",
-        description="Kupuj role i kolory za punkty aktywności.",
+        description="Kupuj role za punkty aktywności.",
         color=discord.Color.gold()
     )
 
-    embed.add_field(name="😎 Sigma", value="500 pkt", inline=False)
-    embed.add_field(name="👑 VIP", value="50 000 pkt", inline=False)
-    embed.add_field(name="💎 LEGENDA", value="100 000 pkt", inline=False)
-
-    embed.add_field(
-        name="🎨 Kolory",
-        value=(
-            "🔵 niebieski — 50 pkt\n"
-            "🔴 czerwony — 60 pkt\n"
-            "🟢 zielony — 70 pkt\n"
-            "🟣 fioletowy — 80 pkt\n"
-            "🟡 zloty — 100 pkt"
-        ),
-        inline=False
-    )
+    embed.add_field(name="⭐ VIP", value="Cena: **50 000 pkt**", inline=False)
+    embed.add_field(name="💎 LEGENDA", value="Cena: **100 000 pkt**", inline=False)
 
     embed.set_footer(text="Możesz kupować przyciskami albo komendą /kup")
     return embed
@@ -548,16 +469,8 @@ async def process_shop_purchase(interaction: discord.Interaction, item_name: str
         await interaction.response.send_message("❌ Nie ma takiego przedmiotu.", ephemeral=True)
         return
 
-    role_id = item["role_id"]
-    if not valid_role_id(role_id):
-        await interaction.response.send_message(
-            "❌ Ten przedmiot nie ma ustawionego ID roli w kodzie.",
-            ephemeral=True
-        )
-        return
-
     member = interaction.guild.get_member(interaction.user.id)
-    role = interaction.guild.get_role(role_id)
+    role = interaction.guild.get_role(item["role_id"])
 
     if member is None or role is None:
         await interaction.response.send_message(
@@ -579,25 +492,18 @@ async def process_shop_purchase(interaction: discord.Interaction, item_name: str
         return
 
     if role in member.roles:
-        await interaction.response.send_message("❌ Masz już tę rolę.", ephemeral=True)
+        await interaction.response.send_message(
+            "❌ Masz już tę rolę.",
+            ephemeral=True
+        )
         return
 
     try:
-        if item["type"] == "color":
-            for color_role_id in COLOR_ROLE_IDS:
-                if not valid_role_id(color_role_id):
-                    continue
-                old_role = interaction.guild.get_role(color_role_id)
-                if old_role and old_role in member.roles:
-                    await member.remove_roles(old_role, reason="Zmiana koloru w sklepie")
-
-        if item["type"] == "rank":
-            for rank_role_id in RANK_ROLE_IDS:
-                if not valid_role_id(rank_role_id):
-                    continue
-                old_role = interaction.guild.get_role(rank_role_id)
-                if old_role and old_role in member.roles:
-                    await member.remove_roles(old_role, reason="Zmiana rangi w sklepie")
+        # Jeśli kupuje LEGENDĘ, zdejmujemy VIP
+        if role.id == LEGEND_ROLE_ID:
+            vip_role = interaction.guild.get_role(VIP_ROLE_ID)
+            if vip_role and vip_role in member.roles:
+                await member.remove_roles(vip_role, reason="Awans na LEGENDĘ")
 
         await member.add_roles(role, reason=f"Zakup w sklepie: {item_key}")
         remove_total_points(interaction.guild.id, member.id, item["price"])
@@ -608,10 +514,16 @@ async def process_shop_purchase(interaction: discord.Interaction, item_name: str
             color=discord.Color.green()
         )
 
-        if valid_role_id(LEGEND_ROLE_ID) and role.id == LEGEND_ROLE_ID:
+        if role.id == LEGEND_ROLE_ID:
             embed.add_field(
                 name="💎 Bonus Legendy",
                 value="Masz teraz +40% punktów i dostęp do kanałów legendy.",
+                inline=False
+            )
+        elif role.id == VIP_ROLE_ID:
+            embed.add_field(
+                name="⭐ Bonus VIP",
+                value="Masz teraz +20% punktów.",
                 inline=False
             )
 
@@ -619,7 +531,7 @@ async def process_shop_purchase(interaction: discord.Interaction, item_name: str
 
     except discord.Forbidden:
         await interaction.response.send_message(
-            "❌ Bot nie może nadać tej roli. Ustaw rolę bota wyżej niż role sklepu.",
+            "❌ Bot nie może nadać tej roli. Ustaw rolę bota wyżej niż VIP i LEGENDA.",
             ephemeral=True
         )
     except Exception as e:
@@ -627,7 +539,6 @@ async def process_shop_purchase(interaction: discord.Interaction, item_name: str
             f"❌ Błąd przy zakupie: {e}",
             ephemeral=True
         )
-
 
 # =========================================================
 # GUI
@@ -669,34 +580,13 @@ class ShopView(discord.ui.View):
         super().__init__(timeout=None)
         self.bot = bot_instance
 
-    @discord.ui.button(label="😎 Sigma", style=discord.ButtonStyle.primary, custom_id="shop_sigma")
-    async def buy_sigma(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await process_shop_purchase(interaction, "sigma")
-
-    @discord.ui.button(label="👑 VIP", style=discord.ButtonStyle.success, custom_id="shop_vip")
+    @discord.ui.button(label="VIP", emoji="⭐", style=discord.ButtonStyle.success, custom_id="shop_vip")
     async def buy_vip(self, interaction: discord.Interaction, button: discord.ui.Button):
         await process_shop_purchase(interaction, "vip")
 
-    @discord.ui.button(label="💎 LEGENDA", style=discord.ButtonStyle.danger, custom_id="shop_legenda")
+    @discord.ui.button(label="LEGENDA", emoji="💎", style=discord.ButtonStyle.danger, custom_id="shop_legenda")
     async def buy_legenda(self, interaction: discord.Interaction, button: discord.ui.Button):
         await process_shop_purchase(interaction, "legenda")
-
-    @discord.ui.button(label="🎨 Kolory", style=discord.ButtonStyle.secondary, custom_id="shop_colors_info")
-    async def colors_info(self, interaction: discord.Interaction, button: discord.ui.Button):
-        embed = discord.Embed(
-            title="🎨 Kolory",
-            description=(
-                "Kup komendą `/kup nazwa`\n\n"
-                "🔵 niebieski — 50 pkt\n"
-                "🔴 czerwony — 60 pkt\n"
-                "🟢 zielony — 70 pkt\n"
-                "🟣 fioletowy — 80 pkt\n"
-                "🟡 zloty — 100 pkt"
-            ),
-            color=discord.Color.blurple()
-        )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-
 
 # =========================================================
 # EVENTY
@@ -750,7 +640,6 @@ async def on_ready():
     except Exception as e:
         print(f"Błąd synchronizacji komend: {e}")
 
-
 # =========================================================
 # VC LOOP
 # =========================================================
@@ -788,7 +677,6 @@ async def vc_loop():
 async def before_vc_loop():
     await bot.wait_until_ready()
 
-
 # =========================================================
 # KOMENDY SLASH
 # =========================================================
@@ -816,56 +704,6 @@ async def punkty(interaction: discord.Interaction):
         embed=points_embed_for_user(member, row),
         ephemeral=True
     )
-
-
-@bot.tree.command(name="ranking", description="Pokazuje ranking serwera")
-async def ranking(interaction: discord.Interaction):
-    if interaction.guild is None:
-        await interaction.response.send_message("Ta komenda działa tylko na serwerze.", ephemeral=True)
-        return
-
-    if interaction.channel_id != RANKING_CHANNEL_ID:
-        await interaction.response.send_message(
-            "❌ Użyj tej komendy w kanale 🏆・ranking.",
-            ephemeral=True
-        )
-        return
-
-    await interaction.response.send_message(embed=ranking_embed(interaction.guild))
-
-
-@bot.tree.command(name="xpinfo", description="Pokazuje zasady punktów")
-async def xpinfo(interaction: discord.Interaction):
-    if interaction.channel_id != XPINFO_CHANNEL_ID:
-        await interaction.response.send_message(
-            "❌ Użyj tej komendy w kanale 📘・info-xp.",
-            ephemeral=True
-        )
-        return
-
-    await interaction.response.send_message(embed=xpinfo_embed())
-
-
-@bot.tree.command(name="sklep", description="Pokazuje sklep serwera")
-async def sklep(interaction: discord.Interaction):
-    if interaction.guild is None:
-        await interaction.response.send_message("Ta komenda działa tylko na serwerze.", ephemeral=True)
-        return
-
-    if interaction.channel_id != SHOP_CHANNEL_ID:
-        await interaction.response.send_message(
-            "❌ Użyj tej komendy w kanale 🛒・sklep.",
-            ephemeral=True
-        )
-        return
-
-    await interaction.response.send_message(embed=shop_embed(), view=ShopView(bot))
-
-
-@bot.tree.command(name="kup", description="Kup przedmiot ze sklepu")
-@app_commands.describe(przedmiot="Np. sigma, vip, legenda, niebieski")
-async def kup(interaction: discord.Interaction, przedmiot: str):
-    await process_shop_purchase(interaction, przedmiot)
 
 
 @bot.tree.command(name="punkty_uzytkownika", description="Pokazuje punkty wybranego użytkownika")
@@ -899,6 +737,56 @@ async def punkty_uzytkownika(interaction: discord.Interaction, uzytkownik: disco
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
+@bot.tree.command(name="ranking", description="Pokazuje ranking serwera")
+async def ranking(interaction: discord.Interaction):
+    if interaction.guild is None:
+        await interaction.response.send_message("Ta komenda działa tylko na serwerze.", ephemeral=True)
+        return
+
+    if interaction.channel_id != RANKING_CHANNEL_ID:
+        await interaction.response.send_message(
+            "❌ Użyj tej komendy w kanale 🏆・ranking.",
+            ephemeral=True
+        )
+        return
+
+    await interaction.response.send_message(embed=ranking_embed(interaction.guild))
+
+
+@bot.tree.command(name="xpinfo", description="Pokazuje zasady punktów")
+async def xpinfo(interaction: discord.Interaction):
+    if interaction.channel_id != XPINFO_CHANNEL_ID:
+        await interaction.response.send_message(
+            "❌ Użyj tej komendy w kanale 📘・info-xp.",
+            ephemeral=True
+        )
+        return
+
+    await interaction.response.send_message(embed=xpinfo_embed())
+
+
+@bot.tree.command(name="sklep", description="Pokazuje sklep punktów")
+async def sklep(interaction: discord.Interaction):
+    if interaction.guild is None:
+        await interaction.response.send_message("Ta komenda działa tylko na serwerze.", ephemeral=True)
+        return
+
+    if interaction.channel_id != SHOP_CHANNEL_ID:
+        await interaction.response.send_message(
+            "❌ Użyj tej komendy w kanale 🛒・sklep.",
+            ephemeral=True
+        )
+        return
+
+    await interaction.response.send_message(embed=shop_embed(), view=ShopView(bot))
+
+
+@bot.tree.command(name="kup", description="Kup przedmiot ze sklepu")
+@app_commands.describe(przedmiot="vip albo legenda")
+async def kup(interaction: discord.Interaction, przedmiot: str):
+    await process_shop_purchase(interaction, przedmiot)
+
+
 @bot.tree.command(name="odswiez_panele", description="Odświeża wszystkie panele bota")
 @app_commands.checks.has_permissions(manage_guild=True)
 async def odswiez_panele(interaction: discord.Interaction):
@@ -919,7 +807,6 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
             await interaction.response.send_message(f"❌ Błąd komendy: {error}", ephemeral=True)
     except discord.InteractionResponded:
         await interaction.followup.send(f"❌ Błąd komendy: {error}", ephemeral=True)
-
 
 # =========================================================
 # START
