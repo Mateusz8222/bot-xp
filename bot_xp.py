@@ -24,6 +24,13 @@ LEGEND_TEXT_CHANNEL_ID = 1490791025671803013 # 💎・legenda-czat
 LEGEND_VC_CHANNEL_ID = 1490792255504646407   # 💎・Legenda VC
 
 # =========================================================
+# AUTO PRYWATNE KANAŁY
+# =========================================================
+PRIVATE_CHANNEL_CATEGORY_NAME = "🔒 Prywatne kanały"
+PRIVATE_CHANNEL_PREFIX = "🔒・"
+PRIVATE_CHANNEL_TOPIC = "Kanał prywatny utworzony automatycznie po zakupie w sklepie."
+
+# =========================================================
 # ID RÓL
 # =========================================================
 VIP_ROLE_ID = 1474567627895738388
@@ -61,6 +68,11 @@ SHOP_ITEMS = {
         "price": 30000,
         "role_id": PRIVATE_CHANNEL_ROLE_ID,
         "label": "🔒 Dostęp do prywatnego kanału",
+    },
+    "auto_prywatny_kanal": {
+        "price": 30000,
+        "role_id": PRIVATE_CHANNEL_ROLE_ID,
+        "label": "🛠️ Auto prywatny kanał",
     },
 }
 
@@ -458,6 +470,7 @@ def shop_embed() -> discord.Embed:
     embed.add_field(name="⭐ VIP", value="Cena: **50 000 pkt**", inline=False)
     embed.add_field(name="💎 LEGENDA", value="Cena: **100 000 pkt**", inline=False)
     embed.add_field(name="🔒 Prywatny kanał", value="Cena: **30 000 pkt**", inline=False)
+    embed.add_field(name="🛠️ Auto prywatny kanał", value="Cena: **30 000 pkt**", inline=False)
     embed.set_footer(text="Możesz kupować przyciskami albo komendą /kup")
     return embed
 
@@ -484,6 +497,93 @@ def xpinfo_panel_embed() -> discord.Embed:
         description="Kliknij przycisk poniżej albo użyj `/xpinfo` w tym kanale.",
         color=discord.Color.orange(),
     )
+
+
+
+def sanitize_private_channel_name(name: str) -> str:
+    safe = name.lower().strip()
+    replacements = {
+        "ą": "a", "ć": "c", "ę": "e", "ł": "l", "ń": "n",
+        "ó": "o", "ś": "s", "ż": "z", "ź": "z",
+    }
+    for old, new in replacements.items():
+        safe = safe.replace(old, new)
+
+    allowed = []
+    for ch in safe:
+        if ch.isalnum() or ch in {"-", "_"}:
+            allowed.append(ch)
+        elif ch in {" ", "."}:
+            allowed.append("-")
+
+    safe = "".join(allowed)
+    while "--" in safe:
+        safe = safe.replace("--", "-")
+    safe = safe.strip("-_")
+    if not safe:
+        safe = "uzytkownik"
+    return f"{PRIVATE_CHANNEL_PREFIX}{safe[:80]}"
+
+
+async def create_or_get_private_channel_for_member(guild: discord.Guild, member: discord.Member) -> discord.TextChannel:
+    category = discord.utils.get(guild.categories, name=PRIVATE_CHANNEL_CATEGORY_NAME)
+    if category is None:
+        category = await guild.create_category(PRIVATE_CHANNEL_CATEGORY_NAME, reason="Auto prywatne kanały")
+
+    expected_name = sanitize_private_channel_name(member.display_name)
+
+    for channel in category.text_channels:
+        overwrites = channel.overwrites_for(member)
+        if channel.name == expected_name or overwrites.view_channel is True:
+            return channel
+
+    bot_member = guild.me
+    overwrites = {
+        guild.default_role: discord.PermissionOverwrite(view_channel=False),
+        member: discord.PermissionOverwrite(
+            view_channel=True,
+            send_messages=True,
+            read_message_history=True,
+            attach_files=True,
+            embed_links=True,
+            add_reactions=True,
+        ),
+    }
+    if bot_member is not None:
+        overwrites[bot_member] = discord.PermissionOverwrite(
+            view_channel=True,
+            send_messages=True,
+            manage_channels=True,
+            manage_messages=True,
+            read_message_history=True,
+        )
+
+    role = guild.get_role(PRIVATE_CHANNEL_ROLE_ID)
+    if role is not None:
+        overwrites[role] = discord.PermissionOverwrite(
+            view_channel=True,
+            send_messages=True,
+            read_message_history=True,
+        )
+
+    channel = await guild.create_text_channel(
+        name=expected_name,
+        category=category,
+        topic=PRIVATE_CHANNEL_TOPIC,
+        overwrites=overwrites,
+        reason=f"Auto prywatny kanał dla {member}",
+    )
+
+    try:
+        await channel.send(
+            f"🔒 Witaj {member.mention}!
+"
+            f"To jest Twój prywatny kanał utworzony automatycznie po zakupie w sklepie."
+        )
+    except discord.HTTPException:
+        pass
+
+    return channel
 
 
 async def ensure_panel_message(
@@ -550,8 +650,12 @@ async def process_shop_purchase(interaction: discord.Interaction, item_name: str
     member = interaction.guild.get_member(interaction.user.id)
     role = interaction.guild.get_role(item["role_id"])
 
-    if member is None or role is None:
-        await safe_interaction_send(interaction, content="❌ Nie udało się znaleźć użytkownika lub roli.", ephemeral=True)
+    if member is None:
+        await safe_interaction_send(interaction, content="❌ Nie udało się znaleźć użytkownika.", ephemeral=True)
+        return
+
+    if role is None:
+        await safe_interaction_send(interaction, content="❌ Nie udało się znaleźć roli sklepowej.", ephemeral=True)
         return
 
     row = get_points_row(interaction.guild.id, member.id)
@@ -567,7 +671,28 @@ async def process_shop_purchase(interaction: discord.Interaction, item_name: str
         )
         return
 
-    if role in member.roles:
+    if item_key == "auto_prywatny_kanal":
+        try:
+            existing_channel = None
+            category = discord.utils.get(interaction.guild.categories, name=PRIVATE_CHANNEL_CATEGORY_NAME)
+            if category is not None:
+                expected_name = sanitize_private_channel_name(member.display_name)
+                for ch in category.text_channels:
+                    overwrites = ch.overwrites_for(member)
+                    if ch.name == expected_name or overwrites.view_channel is True:
+                        existing_channel = ch
+                        break
+            if existing_channel is not None:
+                await safe_interaction_send(
+                    interaction,
+                    content=f"❌ Masz już prywatny kanał: {existing_channel.mention}",
+                    ephemeral=True,
+                )
+                return
+        except Exception:
+            pass
+
+    elif role in member.roles:
         await safe_interaction_send(interaction, content="❌ Masz już tę rolę.", ephemeral=True)
         return
 
@@ -577,7 +702,14 @@ async def process_shop_purchase(interaction: discord.Interaction, item_name: str
             if vip_role and vip_role in member.roles:
                 await member.remove_roles(vip_role, reason="Awans na LEGENDĘ")
 
-        await member.add_roles(role, reason=f"Zakup w sklepie: {item_key}")
+        created_channel = None
+
+        if item_key == "auto_prywatny_kanal":
+            await member.add_roles(role, reason=f"Zakup w sklepie: {item_key}")
+            created_channel = await create_or_get_private_channel_for_member(interaction.guild, member)
+        else:
+            await member.add_roles(role, reason=f"Zakup w sklepie: {item_key}")
+
         remove_total_points(interaction.guild.id, member.id, int(item["price"]))
 
         embed = discord.Embed(
@@ -590,8 +722,10 @@ async def process_shop_purchase(interaction: discord.Interaction, item_name: str
             embed.add_field(name="💎 Bonus Legendy", value="Masz teraz +40% punktów i dostęp do kanałów legendy.", inline=False)
         elif role.id == VIP_ROLE_ID:
             embed.add_field(name="⭐ Bonus VIP", value="Masz teraz +20% punktów.", inline=False)
-        elif role.id == PRIVATE_CHANNEL_ROLE_ID:
-            embed.add_field(name="🔒 Prywatny kanał", value="Masz już dostęp do prywatnego kanału.", inline=False)
+        elif item_key == "prywatny_kanal":
+            embed.add_field(name="🔒 Dostęp", value="Masz rolę dostępu do prywatnego kanału.", inline=False)
+        elif item_key == "auto_prywatny_kanal" and created_channel is not None:
+            embed.add_field(name="🛠️ Twój kanał", value=f"Gotowe: {created_channel.mention}", inline=False)
 
         await safe_interaction_send(interaction, embed=embed, ephemeral=True)
 
@@ -667,6 +801,10 @@ class ShopView(discord.ui.View):
     @discord.ui.button(label="Prywatny kanał", emoji="🔒", style=discord.ButtonStyle.secondary, custom_id="shop_private_channel")
     async def buy_private_channel(self, interaction: discord.Interaction, button: discord.ui.Button):
         await process_shop_purchase(interaction, "prywatny_kanal")
+
+    @discord.ui.button(label="Auto kanał", emoji="🛠️", style=discord.ButtonStyle.primary, custom_id="shop_auto_private_channel")
+    async def buy_auto_private_channel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await process_shop_purchase(interaction, "auto_prywatny_kanal")
 
 # =========================================================
 # EVENTY
