@@ -1,25 +1,16 @@
 import os
 import time
-import sqlite3
-from pathlib import Path
 from typing import Optional
 
 import discord
-from discord.ext import commands, tasks
 from discord import app_commands
+from discord.ext import commands, tasks
 
+# =========================================================
+# KONFIG
+# =========================================================
 TOKEN = os.getenv("TOKEN")
-
-# =========================================================
-# TRWAŁA BAZA DANYCH
-# =========================================================
-# Ustaw na Railway zmienną środowiskową:
-# DATA_DIR=/data
-# i podepnij Volume pod /data
-DATA_DIR = Path(os.getenv("DATA_DIR", "./data"))
-DATA_DIR.mkdir(parents=True, exist_ok=True)
-
-DB_FILE = str(DATA_DIR / "xp.db")
+DATABASE_URL = os.getenv("DATABASE_URL")
 
 # =========================================================
 # ID KANAŁÓW
@@ -76,68 +67,136 @@ PANEL_CHANNELS = {
 }
 
 # =========================================================
-# BAZA
+# BAZA DANYCH
 # =========================================================
-def db_connect() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_FILE)
+USING_POSTGRES = bool(DATABASE_URL)
+
+if USING_POSTGRES:
+    import psycopg2
+    from psycopg2.extras import RealDictCursor
+else:
+    import sqlite3
+    from pathlib import Path
+
+    DATA_DIR = Path(os.getenv("DATA_DIR", "./data"))
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    SQLITE_DB_FILE = str(DATA_DIR / "xp.db")
+
+
+def db_connect():
+    if USING_POSTGRES:
+        conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+        conn.autocommit = False
+        return conn
+
+    conn = sqlite3.connect(SQLITE_DB_FILE)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=5000")
     return conn
 
 
+def sql(query: str) -> str:
+    if USING_POSTGRES:
+        return query.replace("?", "%s")
+    return query
+
+
 def init_db() -> None:
     conn = db_connect()
     cur = conn.cursor()
 
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS points (
-            guild_id INTEGER NOT NULL,
-            user_id INTEGER NOT NULL,
-            text_points INTEGER NOT NULL DEFAULT 0,
-            voice_points INTEGER NOT NULL DEFAULT 0,
-            total_points INTEGER NOT NULL DEFAULT 0,
-            message_count INTEGER NOT NULL DEFAULT 0,
-            PRIMARY KEY (guild_id, user_id)
-        )
-    """)
+    if USING_POSTGRES:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS points (
+                guild_id BIGINT NOT NULL,
+                user_id BIGINT NOT NULL,
+                text_points INTEGER NOT NULL DEFAULT 0,
+                voice_points INTEGER NOT NULL DEFAULT 0,
+                total_points INTEGER NOT NULL DEFAULT 0,
+                message_count INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (guild_id, user_id)
+            )
+        """)
 
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS panel_messages (
-            guild_id INTEGER NOT NULL,
-            panel_key TEXT NOT NULL,
-            channel_id INTEGER NOT NULL,
-            message_id INTEGER NOT NULL,
-            PRIMARY KEY (guild_id, panel_key)
-        )
-    """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS panel_messages (
+                guild_id BIGINT NOT NULL,
+                panel_key TEXT NOT NULL,
+                channel_id BIGINT NOT NULL,
+                message_id BIGINT NOT NULL,
+                PRIMARY KEY (guild_id, panel_key)
+            )
+        """)
+    else:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS points (
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                text_points INTEGER NOT NULL DEFAULT 0,
+                voice_points INTEGER NOT NULL DEFAULT 0,
+                total_points INTEGER NOT NULL DEFAULT 0,
+                message_count INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (guild_id, user_id)
+            )
+        """)
+
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS panel_messages (
+                guild_id INTEGER NOT NULL,
+                panel_key TEXT NOT NULL,
+                channel_id INTEGER NOT NULL,
+                message_id INTEGER NOT NULL,
+                PRIMARY KEY (guild_id, panel_key)
+            )
+        """)
 
     conn.commit()
     conn.close()
+
+
+def fetchone_dict(cur):
+    row = cur.fetchone()
+    if row is None:
+        return None
+    if USING_POSTGRES:
+        return dict(row)
+    return dict(row)
 
 
 def ensure_user_row(guild_id: int, user_id: int) -> None:
     conn = db_connect()
     cur = conn.cursor()
-    cur.execute("""
-        INSERT OR IGNORE INTO points (
-            guild_id, user_id, text_points, voice_points, total_points, message_count
-        ) VALUES (?, ?, 0, 0, 0, 0)
-    """, (guild_id, user_id))
+
+    if USING_POSTGRES:
+        cur.execute("""
+            INSERT INTO points (
+                guild_id, user_id, text_points, voice_points, total_points, message_count
+            ) VALUES (%s, %s, 0, 0, 0, 0)
+            ON CONFLICT (guild_id, user_id) DO NOTHING
+        """, (guild_id, user_id))
+    else:
+        cur.execute("""
+            INSERT OR IGNORE INTO points (
+                guild_id, user_id, text_points, voice_points, total_points, message_count
+            ) VALUES (?, ?, 0, 0, 0, 0)
+        """, (guild_id, user_id))
+
     conn.commit()
     conn.close()
 
 
-def get_points_row(guild_id: int, user_id: int) -> Optional[sqlite3.Row]:
+def get_points_row(guild_id: int, user_id: int) -> Optional[dict]:
     ensure_user_row(guild_id, user_id)
+
     conn = db_connect()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(sql("""
         SELECT text_points, voice_points, total_points, message_count
         FROM points
         WHERE guild_id = ? AND user_id = ?
-    """, (guild_id, user_id))
-    row = cur.fetchone()
+    """), (guild_id, user_id))
+    row = fetchone_dict(cur)
     conn.close()
     return row
 
@@ -147,20 +206,20 @@ def update_message_count(guild_id: int, user_id: int) -> int:
 
     conn = db_connect()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(sql("""
         UPDATE points
         SET message_count = message_count + 1
         WHERE guild_id = ? AND user_id = ?
-    """, (guild_id, user_id))
-    cur.execute("""
+    """), (guild_id, user_id))
+    cur.execute(sql("""
         SELECT message_count
         FROM points
         WHERE guild_id = ? AND user_id = ?
-    """, (guild_id, user_id))
-    count = cur.fetchone()["message_count"]
+    """), (guild_id, user_id))
+    count_row = fetchone_dict(cur)
     conn.commit()
     conn.close()
-    return count
+    return int(count_row["message_count"]) if count_row else 0
 
 
 def add_points_db(guild_id: int, user_id: int, *, text_points: int = 0, voice_points: int = 0) -> None:
@@ -169,13 +228,13 @@ def add_points_db(guild_id: int, user_id: int, *, text_points: int = 0, voice_po
 
     conn = db_connect()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(sql("""
         UPDATE points
         SET text_points = text_points + ?,
             voice_points = voice_points + ?,
             total_points = total_points + ?
         WHERE guild_id = ? AND user_id = ?
-    """, (text_points, voice_points, total_add, guild_id, user_id))
+    """), (text_points, voice_points, total_add, guild_id, user_id))
     conn.commit()
     conn.close()
 
@@ -183,53 +242,63 @@ def add_points_db(guild_id: int, user_id: int, *, text_points: int = 0, voice_po
 def remove_total_points(guild_id: int, user_id: int, amount: int) -> None:
     conn = db_connect()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(sql("""
         UPDATE points
         SET total_points = CASE
             WHEN total_points - ? < 0 THEN 0
             ELSE total_points - ?
         END
         WHERE guild_id = ? AND user_id = ?
-    """, (amount, amount, guild_id, user_id))
+    """), (amount, amount, guild_id, user_id))
     conn.commit()
     conn.close()
 
 
-def get_top_users(guild_id: int, limit: int = 10) -> list[sqlite3.Row]:
+def get_top_users(guild_id: int, limit: int = 10) -> list[dict]:
     conn = db_connect()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(sql("""
         SELECT user_id, text_points, voice_points, total_points, message_count
         FROM points
         WHERE guild_id = ?
         ORDER BY total_points DESC, voice_points DESC, text_points DESC
         LIMIT ?
-    """, (guild_id, limit))
+    """), (guild_id, limit))
     rows = cur.fetchall()
     conn.close()
-    return rows
+    return [dict(row) if USING_POSTGRES else dict(row) for row in rows]
 
 
 def save_panel_message(guild_id: int, panel_key: str, channel_id: int, message_id: int) -> None:
     conn = db_connect()
     cur = conn.cursor()
-    cur.execute("""
-        INSERT OR REPLACE INTO panel_messages (guild_id, panel_key, channel_id, message_id)
-        VALUES (?, ?, ?, ?)
-    """, (guild_id, panel_key, channel_id, message_id))
+
+    if USING_POSTGRES:
+        cur.execute("""
+            INSERT INTO panel_messages (guild_id, panel_key, channel_id, message_id)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (guild_id, panel_key)
+            DO UPDATE SET channel_id = EXCLUDED.channel_id, message_id = EXCLUDED.message_id
+        """, (guild_id, panel_key, channel_id, message_id))
+    else:
+        cur.execute("""
+            INSERT OR REPLACE INTO panel_messages (guild_id, panel_key, channel_id, message_id)
+            VALUES (?, ?, ?, ?)
+        """, (guild_id, panel_key, channel_id, message_id))
+
     conn.commit()
     conn.close()
 
 
-def get_panel_message(guild_id: int, panel_key: str) -> Optional[sqlite3.Row]:
+def get_panel_message(guild_id: int, panel_key: str) -> Optional[dict]:
     conn = db_connect()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(sql("""
         SELECT channel_id, message_id
         FROM panel_messages
         WHERE guild_id = ? AND panel_key = ?
-    """, (guild_id, panel_key))
-    row = cur.fetchone()
+    """), (guild_id, panel_key))
+    row = fetchone_dict(cur)
     conn.close()
     return row
 
@@ -257,7 +326,6 @@ bot = XPBot()
 # =========================================================
 # POMOCNICZE
 # =========================================================
-
 async def safe_interaction_send(
     interaction: discord.Interaction,
     *,
@@ -282,6 +350,7 @@ async def safe_interaction_send(
             await interaction.response.send_message(**kwargs)
     except discord.InteractionResponded:
         await interaction.followup.send(**kwargs)
+
 
 def get_member_multiplier(member: discord.Member) -> float:
     role_ids = {role.id for role in member.roles}
@@ -344,7 +413,7 @@ def get_rank_prefix(member: Optional[discord.Member]) -> str:
     return ""
 
 
-def points_embed_for_user(member: discord.Member, row: sqlite3.Row) -> discord.Embed:
+def points_embed_for_user(member: discord.Member, row: dict) -> discord.Embed:
     embed = discord.Embed(
         title="🏆 Twoje punkty",
         color=discord.Color.blurple()
@@ -370,7 +439,7 @@ def ranking_embed(guild: discord.Guild) -> discord.Embed:
 
     lines = []
     for index, row in enumerate(rows, start=1):
-        member = guild.get_member(row["user_id"])
+        member = guild.get_member(int(row["user_id"]))
         name = member.display_name if member else f"Użytkownik {row['user_id']}"
         prefix = get_rank_prefix(member)
 
@@ -466,7 +535,7 @@ async def ensure_panel_message(
 
     if saved:
         try:
-            message = await channel.fetch_message(saved["message_id"])
+            message = await channel.fetch_message(int(saved["message_id"]))
         except discord.NotFound:
             message = None
         except discord.HTTPException:
@@ -494,12 +563,13 @@ async def refresh_all_panels(guild: discord.Guild) -> None:
 
 async def process_shop_purchase(interaction: discord.Interaction, item_name: str) -> None:
     if interaction.guild is None:
-        await interaction.response.send_message("Ta akcja działa tylko na serwerze.", ephemeral=True)
+        await safe_interaction_send(interaction, content="Ta akcja działa tylko na serwerze.", ephemeral=True)
         return
 
     if interaction.channel_id != SHOP_CHANNEL_ID:
-        await interaction.response.send_message(
-            "❌ Kupowanie działa tylko w kanale 🛒・sklep.",
+        await safe_interaction_send(
+            interaction,
+            content="❌ Kupowanie działa tylko w kanale 🛒・sklep.",
             ephemeral=True
         )
         return
@@ -508,34 +578,37 @@ async def process_shop_purchase(interaction: discord.Interaction, item_name: str
     item = SHOP_ITEMS.get(item_key)
 
     if item is None:
-        await interaction.response.send_message("❌ Nie ma takiego przedmiotu.", ephemeral=True)
+        await safe_interaction_send(interaction, content="❌ Nie ma takiego przedmiotu.", ephemeral=True)
         return
 
     member = interaction.guild.get_member(interaction.user.id)
     role = interaction.guild.get_role(item["role_id"])
 
     if member is None or role is None:
-        await interaction.response.send_message(
-            "❌ Nie udało się znaleźć użytkownika lub roli.",
+        await safe_interaction_send(
+            interaction,
+            content="❌ Nie udało się znaleźć użytkownika lub roli.",
             ephemeral=True
         )
         return
 
     row = get_points_row(interaction.guild.id, member.id)
     if row is None:
-        await interaction.response.send_message("❌ Nie masz jeszcze punktów.", ephemeral=True)
+        await safe_interaction_send(interaction, content="❌ Nie masz jeszcze punktów.", ephemeral=True)
         return
 
-    if row["total_points"] < item["price"]:
-        await interaction.response.send_message(
-            f"❌ Za mało punktów. Potrzebujesz **{item['price']} pkt**.",
+    if int(row["total_points"]) < int(item["price"]):
+        await safe_interaction_send(
+            interaction,
+            content=f"❌ Za mało punktów. Potrzebujesz **{item['price']} pkt**.",
             ephemeral=True
         )
         return
 
     if role in member.roles:
-        await interaction.response.send_message(
-            "❌ Masz już tę rolę.",
+        await safe_interaction_send(
+            interaction,
+            content="❌ Masz już tę rolę.",
             ephemeral=True
         )
         return
@@ -547,7 +620,7 @@ async def process_shop_purchase(interaction: discord.Interaction, item_name: str
                 await member.remove_roles(vip_role, reason="Awans na LEGENDĘ")
 
         await member.add_roles(role, reason=f"Zakup w sklepie: {item_key}")
-        remove_total_points(interaction.guild.id, member.id, item["price"])
+        remove_total_points(interaction.guild.id, member.id, int(item["price"]))
 
         embed = discord.Embed(
             title="✅ Zakup udany",
@@ -568,16 +641,18 @@ async def process_shop_purchase(interaction: discord.Interaction, item_name: str
                 inline=False
             )
 
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await safe_interaction_send(interaction, embed=embed, ephemeral=True)
 
     except discord.Forbidden:
-        await interaction.response.send_message(
-            "❌ Bot nie może nadać tej roli. Ustaw rolę bota wyżej niż VIP i LEGENDA.",
+        await safe_interaction_send(
+            interaction,
+            content="❌ Bot nie może nadać tej roli. Ustaw rolę bota wyżej niż VIP i LEGENDA.",
             ephemeral=True
         )
     except Exception as e:
-        await interaction.response.send_message(
-            f"❌ Błąd przy zakupie: {e}",
+        await safe_interaction_send(
+            interaction,
+            content=f"❌ Błąd przy zakupie: {e}",
             ephemeral=True
         )
 
@@ -592,13 +667,13 @@ class UtilityView(discord.ui.View):
     @discord.ui.button(label="📊 Pokaż punkty", style=discord.ButtonStyle.primary, custom_id="xp_points_button")
     async def points_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.guild is None:
-            await interaction.response.send_message("Ta akcja działa tylko na serwerze.", ephemeral=True)
+            await safe_interaction_send(interaction, content="Ta akcja działa tylko na serwerze.", ephemeral=True)
             return
 
         row = get_points_row(interaction.guild.id, interaction.user.id)
         member = interaction.guild.get_member(interaction.user.id)
         if row is None or member is None:
-            await interaction.response.send_message("Nie masz jeszcze punktów.", ephemeral=True)
+            await safe_interaction_send(interaction, content="Nie masz jeszcze punktów.", ephemeral=True)
             return
 
         await safe_interaction_send(interaction, embed=points_embed_for_user(member, row), ephemeral=True)
@@ -606,7 +681,7 @@ class UtilityView(discord.ui.View):
     @discord.ui.button(label="🏆 Pokaż ranking", style=discord.ButtonStyle.success, custom_id="xp_ranking_button")
     async def ranking_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.guild is None:
-            await interaction.response.send_message("Ta akcja działa tylko na serwerze.", ephemeral=True)
+            await safe_interaction_send(interaction, content="Ta akcja działa tylko na serwerze.", ephemeral=True)
             return
 
         await safe_interaction_send(interaction, embed=ranking_embed(interaction.guild), ephemeral=True)
@@ -648,7 +723,6 @@ async def on_message(message: discord.Message):
             add_points_with_role_bonus(member, text_points=TEXT_POINTS)
 
 
-
 @bot.event
 async def on_voice_state_update(member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
     key = (member.guild.id, member.id)
@@ -663,7 +737,10 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
 @bot.event
 async def on_ready():
     print(f"Zalogowano jako {bot.user}")
-    print(f"Baza danych: {DB_FILE}")
+    if USING_POSTGRES:
+        print("🔥 Używam PostgreSQL")
+    else:
+        print(f"⚠️ Używam SQLite: {SQLITE_DB_FILE}")
 
     for guild in bot.guilds:
         for member in guild.members:
@@ -724,12 +801,13 @@ async def before_vc_loop():
 @bot.tree.command(name="punkty", description="Pokazuje Twoje punkty")
 async def punkty(interaction: discord.Interaction):
     if interaction.guild is None:
-        await interaction.response.send_message("Ta komenda działa tylko na serwerze.", ephemeral=True)
+        await safe_interaction_send(interaction, content="Ta komenda działa tylko na serwerze.", ephemeral=True)
         return
 
     if interaction.channel_id != POINTS_CHANNEL_ID:
-        await interaction.response.send_message(
-            "❌ Użyj tej komendy w kanale 📊・sprawdz-punkty.",
+        await safe_interaction_send(
+            interaction,
+            content="❌ Użyj tej komendy w kanale 📊・sprawdz-punkty.",
             ephemeral=True
         )
         return
@@ -738,10 +816,11 @@ async def punkty(interaction: discord.Interaction):
     member = interaction.guild.get_member(interaction.user.id)
 
     if row is None or member is None:
-        await interaction.response.send_message("Nie masz jeszcze żadnych punktów.", ephemeral=True)
+        await safe_interaction_send(interaction, content="Nie masz jeszcze żadnych punktów.", ephemeral=True)
         return
 
-    await interaction.response.send_message(
+    await safe_interaction_send(
+        interaction,
         embed=points_embed_for_user(member, row),
         ephemeral=True
     )
@@ -751,19 +830,20 @@ async def punkty(interaction: discord.Interaction):
 @app_commands.describe(uzytkownik="Wybierz użytkownika")
 async def punkty_uzytkownika(interaction: discord.Interaction, uzytkownik: discord.Member):
     if interaction.guild is None:
-        await interaction.response.send_message("Ta komenda działa tylko na serwerze.", ephemeral=True)
+        await safe_interaction_send(interaction, content="Ta komenda działa tylko na serwerze.", ephemeral=True)
         return
 
     if interaction.channel_id != POINTS_CHANNEL_ID:
-        await interaction.response.send_message(
-            "❌ Użyj tej komendy w kanale 📊・sprawdz-punkty.",
+        await safe_interaction_send(
+            interaction,
+            content="❌ Użyj tej komendy w kanale 📊・sprawdz-punkty.",
             ephemeral=True
         )
         return
 
     row = get_points_row(interaction.guild.id, uzytkownik.id)
     if row is None:
-        await interaction.response.send_message("Ten użytkownik nie ma jeszcze punktów.", ephemeral=True)
+        await safe_interaction_send(interaction, content="Ten użytkownik nie ma jeszcze punktów.", ephemeral=True)
         return
 
     embed = discord.Embed(
@@ -775,51 +855,54 @@ async def punkty_uzytkownika(interaction: discord.Interaction, uzytkownik: disco
     embed.add_field(name="⭐ Razem", value=str(row["total_points"]), inline=False)
     embed.add_field(name="📝 Liczba wiadomości", value=str(row["message_count"]), inline=False)
 
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+    await safe_interaction_send(interaction, embed=embed, ephemeral=True)
 
 
 @bot.tree.command(name="ranking", description="Pokazuje ranking serwera")
 async def ranking(interaction: discord.Interaction):
     if interaction.guild is None:
-        await interaction.response.send_message("Ta komenda działa tylko na serwerze.", ephemeral=True)
+        await safe_interaction_send(interaction, content="Ta komenda działa tylko na serwerze.", ephemeral=True)
         return
 
     if interaction.channel_id != RANKING_CHANNEL_ID:
-        await interaction.response.send_message(
-            "❌ Użyj tej komendy w kanale 🏆・ranking.",
+        await safe_interaction_send(
+            interaction,
+            content="❌ Użyj tej komendy w kanale 🏆・ranking.",
             ephemeral=True
         )
         return
 
-    await interaction.response.send_message(embed=ranking_embed(interaction.guild))
+    await safe_interaction_send(interaction, embed=ranking_embed(interaction.guild))
 
 
 @bot.tree.command(name="xpinfo", description="Pokazuje zasady punktów")
 async def xpinfo(interaction: discord.Interaction):
     if interaction.channel_id != XPINFO_CHANNEL_ID:
-        await interaction.response.send_message(
-            "❌ Użyj tej komendy w kanale 📘・info-xp.",
+        await safe_interaction_send(
+            interaction,
+            content="❌ Użyj tej komendy w kanale 📘・info-xp.",
             ephemeral=True
         )
         return
 
-    await interaction.response.send_message(embed=xpinfo_embed())
+    await safe_interaction_send(interaction, embed=xpinfo_embed())
 
 
 @bot.tree.command(name="sklep", description="Pokazuje sklep punktów")
 async def sklep(interaction: discord.Interaction):
     if interaction.guild is None:
-        await interaction.response.send_message("Ta komenda działa tylko na serwerze.", ephemeral=True)
+        await safe_interaction_send(interaction, content="Ta komenda działa tylko na serwerze.", ephemeral=True)
         return
 
     if interaction.channel_id != SHOP_CHANNEL_ID:
-        await interaction.response.send_message(
-            "❌ Użyj tej komendy w kanale 🛒・sklep.",
+        await safe_interaction_send(
+            interaction,
+            content="❌ Użyj tej komendy w kanale 🛒・sklep.",
             ephemeral=True
         )
         return
 
-    await interaction.response.send_message(embed=shop_embed(), view=ShopView(bot))
+    await safe_interaction_send(interaction, embed=shop_embed(), view=ShopView(bot))
 
 
 @bot.tree.command(name="kup", description="Kup przedmiot ze sklepu")
@@ -832,20 +915,20 @@ async def kup(interaction: discord.Interaction, przedmiot: str):
 @app_commands.checks.has_permissions(manage_guild=True)
 async def odswiez_panele(interaction: discord.Interaction):
     if interaction.guild is None:
-        await interaction.response.send_message("Ta komenda działa tylko na serwerze.", ephemeral=True)
+        await safe_interaction_send(interaction, content="Ta komenda działa tylko na serwerze.", ephemeral=True)
         return
 
     await refresh_all_panels(interaction.guild)
-    await interaction.response.send_message("✅ Panele zostały odświeżone.", ephemeral=True)
+    await safe_interaction_send(interaction, content="✅ Panele zostały odświeżone.", ephemeral=True)
 
 
 @bot.tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
     try:
         if isinstance(error, app_commands.MissingPermissions):
-            await interaction.response.send_message("❌ Nie masz uprawnień do tej komendy.", ephemeral=True)
+            await safe_interaction_send(interaction, content="❌ Nie masz uprawnień do tej komendy.", ephemeral=True)
         else:
-            await interaction.response.send_message(f"❌ Błąd komendy: {error}", ephemeral=True)
+            await safe_interaction_send(interaction, content=f"❌ Błąd komendy: {error}", ephemeral=True)
     except discord.InteractionResponded:
         await interaction.followup.send(f"❌ Błąd komendy: {error}", ephemeral=True)
 
@@ -854,7 +937,7 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
 # =========================================================
 def main() -> None:
     if not TOKEN:
-        raise RuntimeError("Brak zmiennej TOKEN w Railway.")
+        raise RuntimeError("Brak zmiennej TOKEN.")
     init_db()
     bot.run(TOKEN)
 
