@@ -36,6 +36,7 @@ PRIVATE_CHANNEL_TOPIC = "Kanał prywatny utworzony automatycznie po zakupie w sk
 VIP_ROLE_ID = 1474567627895738388
 LEGEND_ROLE_ID = 1490683484262498335
 PRIVATE_CHANNEL_ROLE_ID = 1475970739986239620  # 🔑 moderator kanału prywatnego
+SIGMA_ROLE_ID = 1491572107539120128  # 😎 SIGMA
 
 # =========================================================
 # USTAWIENIA XP
@@ -58,6 +59,11 @@ SHOP_ITEMS = {
         "price": 30000,
         "role_id": PRIVATE_CHANNEL_ROLE_ID,
         "label": "🛠️ Auto prywatny kanał",
+    },
+    "sigma": {
+        "price": 40000,
+        "role_id": SIGMA_ROLE_ID,
+        "label": "😎 SIGMA",
     },
     "vip": {
         "price": 50000,
@@ -713,6 +719,8 @@ async def process_shop_purchase(interaction: discord.Interaction, item_name: str
             embed.add_field(name="💎 Bonus Legendy", value="Masz teraz +40% punktów i dostęp do kanałów legendy.", inline=False)
         elif role.id == VIP_ROLE_ID:
             embed.add_field(name="⭐ Bonus VIP", value="Masz teraz +20% punktów.", inline=False)
+        elif role.id == SIGMA_ROLE_ID:
+            embed.add_field(name="😎 SIGMA", value="Masz rangę SIGMA.", inline=False)
         elif item_key == "auto_prywatny_kanal" and created_channel is not None:
             embed.add_field(name="🛠️ Twój kanał", value=f"Gotowe: {created_channel.mention}", inline=False)
 
@@ -782,6 +790,10 @@ class ShopView(discord.ui.View):
     @discord.ui.button(label="Auto kanał", emoji="🛠️", style=discord.ButtonStyle.primary, custom_id="shop_auto_private_channel", row=0)
     async def buy_auto_private_channel(self, interaction: discord.Interaction, button: discord.ui.Button):
         await process_shop_purchase(interaction, "auto_prywatny_kanal")
+
+    @discord.ui.button(label="SIGMA", emoji="😎", style=discord.ButtonStyle.secondary, custom_id="shop_sigma", row=0)
+    async def buy_sigma(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await process_shop_purchase(interaction, "sigma")
 
     @discord.ui.button(label="VIP", emoji="⭐", style=discord.ButtonStyle.success, custom_id="shop_vip", row=0)
     async def buy_vip(self, interaction: discord.Interaction, button: discord.ui.Button):
