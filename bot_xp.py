@@ -58,7 +58,6 @@ SHOP_ITEMS = {
     },
 }
 
-# panel_key -> channel_id
 PANEL_CHANNELS = {
     "points": POINTS_CHANNEL_ID,
     "ranking": RANKING_CHANNEL_ID,
@@ -159,8 +158,6 @@ def fetchone_dict(cur):
     row = cur.fetchone()
     if row is None:
         return None
-    if USING_POSTGRES:
-        return dict(row)
     return dict(row)
 
 
@@ -266,7 +263,7 @@ def get_top_users(guild_id: int, limit: int = 10) -> list[dict]:
     """), (guild_id, limit))
     rows = cur.fetchall()
     conn.close()
-    return [dict(row) if USING_POSTGRES else dict(row) for row in rows]
+    return [dict(row) for row in rows]
 
 
 def save_panel_message(guild_id: int, panel_key: str, channel_id: int, message_id: int) -> None:
@@ -318,7 +315,9 @@ class XPBot(commands.Bot):
 
     async def setup_hook(self) -> None:
         self.add_view(ShopView(self))
-        self.add_view(UtilityView(self))
+        self.add_view(PointsView(self))
+        self.add_view(RankingView(self))
+        self.add_view(XpInfoView(self))
 
 
 bot = XPBot()
@@ -354,7 +353,6 @@ async def safe_interaction_send(
 
 def get_member_multiplier(member: discord.Member) -> float:
     role_ids = {role.id for role in member.roles}
-
     if LEGEND_ROLE_ID in role_ids:
         return LEGEND_MULTIPLIER
     if VIP_ROLE_ID in role_ids:
@@ -364,48 +362,35 @@ def get_member_multiplier(member: discord.Member) -> float:
 
 def add_points_with_role_bonus(member: discord.Member, *, text_points: int = 0, voice_points: int = 0) -> None:
     multiplier = get_member_multiplier(member)
-
     final_text = int(text_points * multiplier)
     final_voice = int(voice_points * multiplier)
-
     add_points_db(member.guild.id, member.id, text_points=final_text, voice_points=final_voice)
 
 
 def is_active_for_vc(member: discord.Member) -> bool:
     if member.bot:
         return False
-
     if member.voice is None or member.voice.channel is None:
         return False
 
     v = member.voice
-
     if v.self_mute or v.mute:
         return False
-
     if v.self_deaf or v.deaf:
         return False
-
     if member.guild.afk_channel and v.channel.id == member.guild.afk_channel.id:
         return False
-
     return True
 
 
 def count_active_members_in_channel(channel: discord.VoiceChannel) -> int:
-    count = 0
-    for member in channel.members:
-        if is_active_for_vc(member):
-            count += 1
-    return count
+    return sum(1 for member in channel.members if is_active_for_vc(member))
 
 
 def get_rank_prefix(member: Optional[discord.Member]) -> str:
     if member is None:
         return ""
-
     role_ids = {role.id for role in member.roles}
-
     if LEGEND_ROLE_ID in role_ids:
         return "💎 "
     if VIP_ROLE_ID in role_ids:
@@ -414,10 +399,7 @@ def get_rank_prefix(member: Optional[discord.Member]) -> str:
 
 
 def points_embed_for_user(member: discord.Member, row: dict) -> discord.Embed:
-    embed = discord.Embed(
-        title="🏆 Twoje punkty",
-        color=discord.Color.blurple()
-    )
+    embed = discord.Embed(title="🏆 Twoje punkty", color=discord.Color.blurple())
     embed.add_field(name="💬 Za wiadomości", value=str(row["text_points"]), inline=False)
     embed.add_field(name="🎤 Za VC", value=str(row["voice_points"]), inline=False)
     embed.add_field(name="⭐ Razem", value=str(row["total_points"]), inline=False)
@@ -428,10 +410,7 @@ def points_embed_for_user(member: discord.Member, row: dict) -> discord.Embed:
 
 def ranking_embed(guild: discord.Guild) -> discord.Embed:
     rows = get_top_users(guild.id, 10)
-    embed = discord.Embed(
-        title="🏆 Ranking serwera",
-        color=discord.Color.gold()
-    )
+    embed = discord.Embed(title="🏆 Ranking serwera", color=discord.Color.gold())
 
     if not rows:
         embed.description = "Na tym serwerze nikt nie ma jeszcze punktów."
@@ -442,7 +421,6 @@ def ranking_embed(guild: discord.Guild) -> discord.Embed:
         member = guild.get_member(int(row["user_id"]))
         name = member.display_name if member else f"Użytkownik {row['user_id']}"
         prefix = get_rank_prefix(member)
-
         lines.append(
             f"**{index}.** {prefix}{name} — **{row['total_points']} pkt** "
             f"(💬 {row['text_points']} | 🎤 {row['voice_points']} | 📝 {row['message_count']})"
@@ -453,30 +431,15 @@ def ranking_embed(guild: discord.Guild) -> discord.Embed:
 
 
 def xpinfo_embed() -> discord.Embed:
-    embed = discord.Embed(
-        title="📘 Zasady punktów",
-        color=discord.Color.orange()
-    )
-    embed.add_field(
-        name="💬 Wiadomości",
-        value="2 punkty za każde 10 wiadomości",
-        inline=False
-    )
+    embed = discord.Embed(title="📘 Zasady punktów", color=discord.Color.orange())
+    embed.add_field(name="💬 Wiadomości", value="2 punkty za każde 10 wiadomości", inline=False)
     embed.add_field(
         name="🎤 VC",
         value="5 punktów za 10 minut solo\n10 punktów za 10 minut z aktywną osobą",
-        inline=False
+        inline=False,
     )
-    embed.add_field(
-        name="⭐ Bonusy rang",
-        value="VIP: +20%\nLEGENDA: +40%",
-        inline=False
-    )
-    embed.add_field(
-        name="❌ Punkty VC nie lecą gdy",
-        value="bot / mute / deaf / kanał AFK",
-        inline=False
-    )
+    embed.add_field(name="⭐ Bonusy rang", value="VIP: +20%\nLEGENDA: +40%", inline=False)
+    embed.add_field(name="❌ Punkty VC nie lecą gdy", value="bot / mute / deaf / kanał AFK", inline=False)
     return embed
 
 
@@ -484,12 +447,10 @@ def shop_embed() -> discord.Embed:
     embed = discord.Embed(
         title="🛒 Sklep punktów",
         description="Kupuj role za punkty aktywności.",
-        color=discord.Color.gold()
+        color=discord.Color.gold(),
     )
-
     embed.add_field(name="⭐ VIP", value="Cena: **50 000 pkt**", inline=False)
     embed.add_field(name="💎 LEGENDA", value="Cena: **100 000 pkt**", inline=False)
-
     embed.set_footer(text="Możesz kupować przyciskami albo komendą /kup")
     return embed
 
@@ -498,7 +459,7 @@ def points_panel_embed() -> discord.Embed:
     return discord.Embed(
         title="📊 Punkty",
         description="Kliknij przycisk poniżej albo użyj `/punkty` w tym kanale.",
-        color=discord.Color.blue()
+        color=discord.Color.blue(),
     )
 
 
@@ -506,7 +467,7 @@ def ranking_panel_embed() -> discord.Embed:
     return discord.Embed(
         title="🏆 Ranking",
         description="Kliknij przycisk poniżej albo użyj `/ranking` w tym kanale.",
-        color=discord.Color.gold()
+        color=discord.Color.gold(),
     )
 
 
@@ -514,7 +475,7 @@ def xpinfo_panel_embed() -> discord.Embed:
     return discord.Embed(
         title="📘 Info XP",
         description="Kliknij przycisk poniżej albo użyj `/xpinfo` w tym kanale.",
-        color=discord.Color.orange()
+        color=discord.Color.orange(),
     )
 
 
@@ -536,9 +497,7 @@ async def ensure_panel_message(
     if saved:
         try:
             message = await channel.fetch_message(int(saved["message_id"]))
-        except discord.NotFound:
-            message = None
-        except discord.HTTPException:
+        except (discord.NotFound, discord.HTTPException):
             message = None
 
     if message is None:
@@ -555,9 +514,9 @@ async def ensure_panel_message(
 
 
 async def refresh_all_panels(guild: discord.Guild) -> None:
-    await ensure_panel_message(guild, "points", points_panel_embed(), UtilityView(bot))
-    await ensure_panel_message(guild, "ranking", ranking_panel_embed(), UtilityView(bot))
-    await ensure_panel_message(guild, "xpinfo", xpinfo_panel_embed(), UtilityView(bot))
+    await ensure_panel_message(guild, "points", points_panel_embed(), PointsView(bot))
+    await ensure_panel_message(guild, "ranking", ranking_panel_embed(), RankingView(bot))
+    await ensure_panel_message(guild, "xpinfo", xpinfo_panel_embed(), XpInfoView(bot))
     await ensure_panel_message(guild, "shop", shop_embed(), ShopView(bot))
 
 
@@ -585,11 +544,7 @@ async def process_shop_purchase(interaction: discord.Interaction, item_name: str
     role = interaction.guild.get_role(item["role_id"])
 
     if member is None or role is None:
-        await safe_interaction_send(
-            interaction,
-            content="❌ Nie udało się znaleźć użytkownika lub roli.",
-            ephemeral=True
-        )
+        await safe_interaction_send(interaction, content="❌ Nie udało się znaleźć użytkownika lub roli.", ephemeral=True)
         return
 
     row = get_points_row(interaction.guild.id, member.id)
@@ -606,11 +561,7 @@ async def process_shop_purchase(interaction: discord.Interaction, item_name: str
         return
 
     if role in member.roles:
-        await safe_interaction_send(
-            interaction,
-            content="❌ Masz już tę rolę.",
-            ephemeral=True
-        )
+        await safe_interaction_send(interaction, content="❌ Masz już tę rolę.", ephemeral=True)
         return
 
     try:
@@ -629,17 +580,9 @@ async def process_shop_purchase(interaction: discord.Interaction, item_name: str
         )
 
         if role.id == LEGEND_ROLE_ID:
-            embed.add_field(
-                name="💎 Bonus Legendy",
-                value="Masz teraz +40% punktów i dostęp do kanałów legendy.",
-                inline=False
-            )
+            embed.add_field(name="💎 Bonus Legendy", value="Masz teraz +40% punktów i dostęp do kanałów legendy.", inline=False)
         elif role.id == VIP_ROLE_ID:
-            embed.add_field(
-                name="⭐ Bonus VIP",
-                value="Masz teraz +20% punktów.",
-                inline=False
-            )
+            embed.add_field(name="⭐ Bonus VIP", value="Masz teraz +20% punktów.", inline=False)
 
         await safe_interaction_send(interaction, embed=embed, ephemeral=True)
 
@@ -650,16 +593,12 @@ async def process_shop_purchase(interaction: discord.Interaction, item_name: str
             ephemeral=True
         )
     except Exception as e:
-        await safe_interaction_send(
-            interaction,
-            content=f"❌ Błąd przy zakupie: {e}",
-            ephemeral=True
-        )
+        await safe_interaction_send(interaction, content=f"❌ Błąd przy zakupie: {e}", ephemeral=True)
 
 # =========================================================
 # GUI
 # =========================================================
-class UtilityView(discord.ui.View):
+class PointsView(discord.ui.View):
     def __init__(self, bot_instance: XPBot):
         super().__init__(timeout=None)
         self.bot = bot_instance
@@ -678,6 +617,12 @@ class UtilityView(discord.ui.View):
 
         await safe_interaction_send(interaction, embed=points_embed_for_user(member, row), ephemeral=True)
 
+
+class RankingView(discord.ui.View):
+    def __init__(self, bot_instance: XPBot):
+        super().__init__(timeout=None)
+        self.bot = bot_instance
+
     @discord.ui.button(label="🏆 Pokaż ranking", style=discord.ButtonStyle.success, custom_id="xp_ranking_button")
     async def ranking_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.guild is None:
@@ -685,6 +630,12 @@ class UtilityView(discord.ui.View):
             return
 
         await safe_interaction_send(interaction, embed=ranking_embed(interaction.guild), ephemeral=True)
+
+
+class XpInfoView(discord.ui.View):
+    def __init__(self, bot_instance: XPBot):
+        super().__init__(timeout=None)
+        self.bot = bot_instance
 
     @discord.ui.button(label="📘 Zasady XP", style=discord.ButtonStyle.secondary, custom_id="xp_info_button")
     async def info_button(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -711,7 +662,6 @@ class ShopView(discord.ui.View):
 async def on_message(message: discord.Message):
     if message.author.bot or message.guild is None:
         return
-
     if not message.content or not message.content.strip():
         return
 
@@ -805,11 +755,7 @@ async def punkty(interaction: discord.Interaction):
         return
 
     if interaction.channel_id != POINTS_CHANNEL_ID:
-        await safe_interaction_send(
-            interaction,
-            content="❌ Użyj tej komendy w kanale 📊・sprawdz-punkty.",
-            ephemeral=True
-        )
+        await safe_interaction_send(interaction, content="❌ Użyj tej komendy w kanale 📊・sprawdz-punkty.", ephemeral=True)
         return
 
     row = get_points_row(interaction.guild.id, interaction.user.id)
@@ -819,11 +765,7 @@ async def punkty(interaction: discord.Interaction):
         await safe_interaction_send(interaction, content="Nie masz jeszcze żadnych punktów.", ephemeral=True)
         return
 
-    await safe_interaction_send(
-        interaction,
-        embed=points_embed_for_user(member, row),
-        ephemeral=True
-    )
+    await safe_interaction_send(interaction, embed=points_embed_for_user(member, row), ephemeral=True)
 
 
 @bot.tree.command(name="punkty_uzytkownika", description="Pokazuje punkty wybranego użytkownika")
@@ -834,11 +776,7 @@ async def punkty_uzytkownika(interaction: discord.Interaction, uzytkownik: disco
         return
 
     if interaction.channel_id != POINTS_CHANNEL_ID:
-        await safe_interaction_send(
-            interaction,
-            content="❌ Użyj tej komendy w kanale 📊・sprawdz-punkty.",
-            ephemeral=True
-        )
+        await safe_interaction_send(interaction, content="❌ Użyj tej komendy w kanale 📊・sprawdz-punkty.", ephemeral=True)
         return
 
     row = get_points_row(interaction.guild.id, uzytkownik.id)
@@ -846,10 +784,7 @@ async def punkty_uzytkownika(interaction: discord.Interaction, uzytkownik: disco
         await safe_interaction_send(interaction, content="Ten użytkownik nie ma jeszcze punktów.", ephemeral=True)
         return
 
-    embed = discord.Embed(
-        title=f"🏆 Punkty użytkownika: {uzytkownik.display_name}",
-        color=discord.Color.green()
-    )
+    embed = discord.Embed(title=f"🏆 Punkty użytkownika: {uzytkownik.display_name}", color=discord.Color.green())
     embed.add_field(name="💬 Za wiadomości", value=str(row["text_points"]), inline=False)
     embed.add_field(name="🎤 Za VC", value=str(row["voice_points"]), inline=False)
     embed.add_field(name="⭐ Razem", value=str(row["total_points"]), inline=False)
@@ -865,11 +800,7 @@ async def ranking(interaction: discord.Interaction):
         return
 
     if interaction.channel_id != RANKING_CHANNEL_ID:
-        await safe_interaction_send(
-            interaction,
-            content="❌ Użyj tej komendy w kanale 🏆・ranking.",
-            ephemeral=True
-        )
+        await safe_interaction_send(interaction, content="❌ Użyj tej komendy w kanale 🏆・ranking.", ephemeral=True)
         return
 
     await safe_interaction_send(interaction, embed=ranking_embed(interaction.guild))
@@ -878,11 +809,7 @@ async def ranking(interaction: discord.Interaction):
 @bot.tree.command(name="xpinfo", description="Pokazuje zasady punktów")
 async def xpinfo(interaction: discord.Interaction):
     if interaction.channel_id != XPINFO_CHANNEL_ID:
-        await safe_interaction_send(
-            interaction,
-            content="❌ Użyj tej komendy w kanale 📘・info-xp.",
-            ephemeral=True
-        )
+        await safe_interaction_send(interaction, content="❌ Użyj tej komendy w kanale 📘・info-xp.", ephemeral=True)
         return
 
     await safe_interaction_send(interaction, embed=xpinfo_embed())
@@ -895,11 +822,7 @@ async def sklep(interaction: discord.Interaction):
         return
 
     if interaction.channel_id != SHOP_CHANNEL_ID:
-        await safe_interaction_send(
-            interaction,
-            content="❌ Użyj tej komendy w kanale 🛒・sklep.",
-            ephemeral=True
-        )
+        await safe_interaction_send(interaction, content="❌ Użyj tej komendy w kanale 🛒・sklep.", ephemeral=True)
         return
 
     await safe_interaction_send(interaction, embed=shop_embed(), view=ShopView(bot))
