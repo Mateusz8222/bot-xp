@@ -525,14 +525,14 @@ def sanitize_private_channel_name(name: str) -> str:
     return f"{PRIVATE_CHANNEL_PREFIX}{safe[:80]}"
 
 
-async def create_or_get_private_channel_for_member(guild: discord.Guild, member: discord.Member) -> discord.TextChannel:
+async def create_or_get_private_channel_for_member(guild: discord.Guild, member: discord.Member) -> discord.VoiceChannel:
     category = discord.utils.get(guild.categories, name=PRIVATE_CHANNEL_CATEGORY_NAME)
     if category is None:
         category = await guild.create_category(PRIVATE_CHANNEL_CATEGORY_NAME, reason="Auto prywatne kanały")
 
     expected_name = sanitize_private_channel_name(member.display_name)
 
-    for channel in category.text_channels:
+    for channel in category.voice_channels:
         overwrites = channel.overwrites_for(member)
         if channel.name == expected_name or overwrites.view_channel is True:
             return channel
@@ -566,22 +566,13 @@ async def create_or_get_private_channel_for_member(guild: discord.Guild, member:
             read_message_history=True,
         )
 
-    channel = await guild.create_text_channel(
+    channel = await guild.create_voice_channel(
         name=expected_name,
         category=category,
         topic=PRIVATE_CHANNEL_TOPIC,
         overwrites=overwrites,
         reason=f"Auto prywatny kanał dla {member}",
     )
-
-    try:
-        await channel.send(
-            f"🔒 Witaj {member.mention}!
-"
-            f"To jest Twój prywatny kanał utworzony automatycznie po zakupie w sklepie."
-        )
-    except discord.HTTPException:
-        pass
 
     return channel
 
@@ -608,16 +599,6 @@ async def ensure_panel_message(
             message = None
 
     if message is None:
-        message = await channel.send(embed=embed, view=view)
-        save_panel_message(guild.id, panel_key, channel.id, message.id)
-    else:
-        await message.edit(embed=embed, view=view)
-
-    try:
-        if not message.pinned:
-            await message.pin(reason="Panel bota XP")
-    except discord.HTTPException:
-        pass
 
 
 async def refresh_all_panels(guild: discord.Guild) -> None:
@@ -677,7 +658,7 @@ async def process_shop_purchase(interaction: discord.Interaction, item_name: str
             category = discord.utils.get(interaction.guild.categories, name=PRIVATE_CHANNEL_CATEGORY_NAME)
             if category is not None:
                 expected_name = sanitize_private_channel_name(member.display_name)
-                for ch in category.text_channels:
+                for ch in category.voice_channels:
                     overwrites = ch.overwrites_for(member)
                     if ch.name == expected_name or overwrites.view_channel is True:
                         existing_channel = ch
