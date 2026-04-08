@@ -599,6 +599,16 @@ async def ensure_panel_message(
             message = None
 
     if message is None:
+        message = await channel.send(embed=embed, view=view)
+        save_panel_message(guild.id, panel_key, channel.id, message.id)
+    else:
+        await message.edit(embed=embed, view=view)
+
+    try:
+        if not message.pinned:
+            await message.pin(reason="Panel bota XP")
+    except discord.HTTPException:
+        pass
 
 
 async def refresh_all_panels(guild: discord.Guild) -> None:
