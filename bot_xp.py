@@ -54,6 +54,11 @@ LEGEND_MULTIPLIER = 1.40
 # SKLEP
 # =========================================================
 SHOP_ITEMS = {
+    "auto_prywatny_kanal": {
+        "price": 30000,
+        "role_id": PRIVATE_CHANNEL_ROLE_ID,
+        "label": "🛠️ Auto prywatny kanał",
+    },
     "vip": {
         "price": 50000,
         "role_id": VIP_ROLE_ID,
@@ -63,16 +68,6 @@ SHOP_ITEMS = {
         "price": 100000,
         "role_id": LEGEND_ROLE_ID,
         "label": "💎 LEGENDA",
-    },
-    "prywatny_kanal": {
-        "price": 30000,
-        "role_id": PRIVATE_CHANNEL_ROLE_ID,
-        "label": "🔒 Dostęp do prywatnego kanału",
-    },
-    "auto_prywatny_kanal": {
-        "price": 30000,
-        "role_id": PRIVATE_CHANNEL_ROLE_ID,
-        "label": "🛠️ Auto prywatny kanał",
     },
 }
 
@@ -464,16 +459,21 @@ def xpinfo_embed() -> discord.Embed:
 def shop_embed() -> discord.Embed:
     embed = discord.Embed(
         title="🛒 Sklep punktów",
-        description="Kupuj role za punkty aktywności.",
+        description="Kupuj role i funkcje za punkty aktywności.",
         color=discord.Color.gold(),
     )
-    embed.add_field(name="⭐ VIP", value="Cena: **50 000 pkt**", inline=False)
-    embed.add_field(name="💎 LEGENDA", value="Cena: **100 000 pkt**", inline=False)
-    embed.add_field(name="🔒 Prywatny kanał", value="Cena: **30 000 pkt**", inline=False)
-    embed.add_field(name="🛠️ Auto prywatny kanał", value="Cena: **30 000 pkt**", inline=False)
+
+    sorted_items = sorted(SHOP_ITEMS.values(), key=lambda item: item["price"])
+
+    for item in sorted_items:
+        embed.add_field(
+            name=item["label"],
+            value=f"Cena: **{item['price']:,} pkt**".replace(",", " "),
+            inline=False,
+        )
+
     embed.set_footer(text="Możesz kupować przyciskami albo komendą /kup")
     return embed
-
 
 def points_panel_embed() -> discord.Embed:
     return discord.Embed(
@@ -713,8 +713,6 @@ async def process_shop_purchase(interaction: discord.Interaction, item_name: str
             embed.add_field(name="💎 Bonus Legendy", value="Masz teraz +40% punktów i dostęp do kanałów legendy.", inline=False)
         elif role.id == VIP_ROLE_ID:
             embed.add_field(name="⭐ Bonus VIP", value="Masz teraz +20% punktów.", inline=False)
-        elif item_key == "prywatny_kanal":
-            embed.add_field(name="🔒 Dostęp", value="Masz rolę dostępu do prywatnego kanału.", inline=False)
         elif item_key == "auto_prywatny_kanal" and created_channel is not None:
             embed.add_field(name="🛠️ Twój kanał", value=f"Gotowe: {created_channel.mention}", inline=False)
 
@@ -781,21 +779,17 @@ class ShopView(discord.ui.View):
         super().__init__(timeout=None)
         self.bot = bot_instance
 
-    @discord.ui.button(label="VIP", emoji="⭐", style=discord.ButtonStyle.success, custom_id="shop_vip")
+    @discord.ui.button(label="Auto kanał", emoji="🛠️", style=discord.ButtonStyle.primary, custom_id="shop_auto_private_channel", row=0)
+    async def buy_auto_private_channel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await process_shop_purchase(interaction, "auto_prywatny_kanal")
+
+    @discord.ui.button(label="VIP", emoji="⭐", style=discord.ButtonStyle.success, custom_id="shop_vip", row=0)
     async def buy_vip(self, interaction: discord.Interaction, button: discord.ui.Button):
         await process_shop_purchase(interaction, "vip")
 
-    @discord.ui.button(label="LEGENDA", emoji="💎", style=discord.ButtonStyle.danger, custom_id="shop_legenda")
+    @discord.ui.button(label="LEGENDA", emoji="💎", style=discord.ButtonStyle.danger, custom_id="shop_legenda", row=0)
     async def buy_legenda(self, interaction: discord.Interaction, button: discord.ui.Button):
         await process_shop_purchase(interaction, "legenda")
-
-    @discord.ui.button(label="Prywatny kanał", emoji="🔒", style=discord.ButtonStyle.secondary, custom_id="shop_private_channel")
-    async def buy_private_channel(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await process_shop_purchase(interaction, "prywatny_kanal")
-
-    @discord.ui.button(label="Auto kanał", emoji="🛠️", style=discord.ButtonStyle.primary, custom_id="shop_auto_private_channel")
-    async def buy_auto_private_channel(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await process_shop_purchase(interaction, "auto_prywatny_kanal")
 
 # =========================================================
 # EVENTY
