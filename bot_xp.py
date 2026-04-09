@@ -1,5 +1,4 @@
 import os
-import asyncio
 import random
 import time
 from typing import Optional
@@ -42,6 +41,7 @@ SIGMA_ROLE_ID = 1491572107539120128            # 😎 SIGMA
 GOLD_MEDAL_ROLE_ID = 1491590645599441109
 SILVER_MEDAL_ROLE_ID = 1491589877291024486
 BRONZE_MEDAL_ROLE_ID = 1491588730249679108
+AURA_ROLE_ID = 1491917610281861231  # 🌌 AURA
 
 # =========================================================
 # USTAWIENIA XP
@@ -74,6 +74,21 @@ CRATE_CONFIG = {
             {"type": "points", "value": 8000, "weight": 20, "name": "8 000 pkt"},
             {"type": "points", "value": 12000, "weight": 20, "name": "12 000 pkt"},
             {"type": "points", "value": 15000, "weight": 15, "name": "15 000 pkt"},
+        ],
+    },
+    "crate_mystery": {
+        "price": 20000,
+        "label": "🎰 Mystery Box",
+        "emoji": "🎰",
+        "description": "Ryzykowna skrzynka z punktami, medalem, SIGMĄ albo pustką.",
+        "rewards": [
+            {"type": "nothing", "value": None, "weight": 18, "name": "❌ Pusta skrzynka"},
+            {"type": "points", "value": 5000, "weight": 20, "name": "5 000 pkt"},
+            {"type": "points", "value": 10000, "weight": 20, "name": "10 000 pkt"},
+            {"type": "points", "value": 20000, "weight": 18, "name": "20 000 pkt"},
+            {"type": "points", "value": 35000, "weight": 12, "name": "35 000 pkt"},
+            {"type": "role", "value": BRONZE_MEDAL_ROLE_ID, "weight": 8, "name": "🥉 Brązowy Medal"},
+            {"type": "role", "value": SIGMA_ROLE_ID, "weight": 4, "name": "😎 SIGMA"},
         ],
     },
     "crate_premium": {
@@ -118,6 +133,8 @@ CRATE_CONFIG = {
 # =========================================================
 SHOP_ITEMS = {
     "crate_basic": {"price": 10000, "label": "📦 Zwykła skrzynka"},
+    "crate_mystery": {"price": 20000, "label": "🎰 Mystery Box"},
+    "xp_booster": {"price": 20000, "label": "⚡ Booster XP 1h"},
     "crate_premium": {"price": 25000, "label": "🎁 Premium skrzynka"},
     "auto_prywatny_kanal": {
         "price": 30000,
@@ -128,6 +145,11 @@ SHOP_ITEMS = {
         "price": 40000,
         "role_id": SIGMA_ROLE_ID,
         "label": "😎 SIGMA",
+    },
+    "aura": {
+        "price": 45000,
+        "role_id": AURA_ROLE_ID,
+        "label": "🌌 AURA",
     },
     "vip": {
         "price": 50000,
@@ -224,6 +246,24 @@ def init_db() -> None:
                 crate_key TEXT NOT NULL,
                 next_open_at BIGINT NOT NULL,
                 PRIMARY KEY (guild_id, user_id, crate_key)
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS xp_boosts (
+                guild_id BIGINT NOT NULL,
+                user_id BIGINT NOT NULL,
+                multiplier REAL NOT NULL,
+                expires_at BIGINT NOT NULL,
+                PRIMARY KEY (guild_id, user_id)
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS xp_boosts (
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                multiplier REAL NOT NULL,
+                expires_at INTEGER NOT NULL,
+                PRIMARY KEY (guild_id, user_id)
             )
         """)
         cur.execute("""
@@ -481,6 +521,60 @@ def get_last_crate_history(guild_id: int, user_id: int, limit: int = 5) -> list[
     return [dict(row) for row in rows]
 
 
+def get_active_xp_boost(guild_id: int, user_id: int) -> float:
+    now_ts = int(time.time())
+    conn = db_connect()
+    cur = conn.cursor()
+    cur.execute(sql("""
+        SELECT multiplier, expires_at
+        FROM xp_boosts
+        WHERE guild_id = ? AND user_id = ?
+    """), (guild_id, user_id))
+    row = fetchone_dict(cur)
+    conn.close()
+    if not row:
+        return 1.0
+    if int(row["expires_at"]) <= now_ts:
+        clear_xp_boost(guild_id, user_id)
+        return 1.0
+    return float(row["multiplier"])
+
+
+def set_xp_boost(guild_id: int, user_id: int, multiplier: float, expires_at: int) -> None:
+    conn = db_connect()
+    cur = conn.cursor()
+    if USING_POSTGRES:
+        cur.execute("""
+            INSERT INTO xp_boosts (guild_id, user_id, multiplier, expires_at)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (guild_id, user_id)
+            DO UPDATE SET multiplier = EXCLUDED.multiplier, expires_at = EXCLUDED.expires_at
+        """, (guild_id, user_id, multiplier, int(expires_at)))
+    else:
+        cur.execute("""
+            INSERT OR REPLACE INTO xp_boosts (guild_id, user_id, multiplier, expires_at)
+            VALUES (?, ?, ?, ?)
+        """, (guild_id, user_id, multiplier, int(expires_at)))
+    conn.commit()
+    conn.close()
+
+
+def clear_xp_boost(guild_id: int, user_id: int) -> None:
+    conn = db_connect()
+    cur = conn.cursor()
+    cur.execute(sql("""
+        DELETE FROM xp_boosts
+        WHERE guild_id = ? AND user_id = ?
+    """), (guild_id, user_id))
+    conn.commit()
+    conn.close()
+
+
+def get_total_multiplier(member: discord.Member) -> float:
+    return get_member_multiplier(member) * get_active_xp_boost(member.guild.id, member.id)
+
+
+
 # =========================================================
 # BOT
 # =========================================================
@@ -543,7 +637,7 @@ def get_member_multiplier(member: discord.Member) -> float:
 
 
 def add_points_with_role_bonus(member: discord.Member, *, text_points: int = 0, voice_points: int = 0) -> None:
-    multiplier = get_member_multiplier(member)
+    multiplier = get_total_multiplier(member)
     final_text = int(text_points * multiplier)
     final_voice = int(voice_points * multiplier)
     add_points_db(member.guild.id, member.id, text_points=final_text, voice_points=final_voice)
@@ -710,6 +804,8 @@ def xpinfo_embed() -> discord.Embed:
     )
     embed.add_field(name="⭐ Bonusy rang", value="VIP: +20%\nLEGENDA: +40%", inline=False)
     embed.add_field(name="📦 Skrzynki", value="Mogą wypaść punkty, role, medale albo pusta skrzynka.", inline=False)
+    embed.add_field(name="⚡ Booster XP", value="+25% XP przez 1 godzinę po zakupie.", inline=False)
+    embed.add_field(name="🌌 AURA", value="Prestiżowa rola wizualna do kupienia w sklepie.", inline=False)
     embed.add_field(name="❌ Punkty VC nie lecą gdy", value="bot / mute / deaf / kanał AFK", inline=False)
     return embed
 
@@ -763,20 +859,19 @@ def crate_result_embed(crate_key: str, reward_type: str, reward_value: Optional[
     color = discord.Color.random()
 
     if reward_type == "points":
-        title = f"{crate['emoji']} Skrzynka otwarta!"
+        title = f"{crate['emoji']} Otworzyłeś {crate['label']}"
         desc = f"🎉 **{member.display_name}** wygrał **{reward_value} pkt**!"
         color = discord.Color.green()
     elif reward_type == "role":
-        title = f"{crate['emoji']} Skrzynka otwarta!"
+        title = f"{crate['emoji']} Otworzyłeś {crate['label']}"
         desc = f"🏅 **{member.display_name}** zdobył **{reward_value}**!"
         color = discord.Color.gold()
     else:
-        title = f"{crate['emoji']} Skrzynka otwarta!"
+        title = f"{crate['emoji']} Otworzyłeś {crate['label']}"
         desc = f"❌ **{member.display_name}** trafił pustą skrzynkę."
         color = discord.Color.red()
 
     embed = discord.Embed(title=title, description=desc, color=color)
-    embed.add_field(name="Typ skrzynki", value=crate["label"], inline=False)
     embed.set_footer(text="Powodzenia przy następnym otwarciu 😎")
     return embed
 
@@ -858,50 +953,6 @@ async def refresh_all_panels(guild: discord.Guild) -> None:
     await ensure_panel_message(guild, "shop", shop_embed(), ShopView(bot))
 
 
-async def animate_crate_opening(
-    interaction: discord.Interaction,
-    crate_key: str,
-    member: discord.Member,
-    final_embed: discord.Embed,
-) -> None:
-    crate = CRATE_CONFIG[crate_key]
-    phases = [
-        discord.Embed(
-            title=f"{crate['emoji']} Otwieranie skrzynki...",
-            description=f"**{member.display_name}** otwiera **{crate['label']}**",
-            color=discord.Color.blurple(),
-        ),
-        discord.Embed(
-            title="🎰 Losowanie nagrody...",
-            description="Kostki się toczą... zaraz zobaczymy co wypadnie.",
-            color=discord.Color.orange(),
-        ),
-        discord.Embed(
-            title="✨ Jeszcze chwila...",
-            description="System finalizuje wynik skrzynki.",
-            color=discord.Color.gold(),
-        ),
-    ]
-
-    await safe_interaction_send(interaction, embed=phases[0], ephemeral=True)
-    await asyncio.sleep(0.9)
-    try:
-        await interaction.edit_original_response(embed=phases[1], view=None)
-    except Exception:
-        pass
-    await asyncio.sleep(0.9)
-    try:
-        await interaction.edit_original_response(embed=phases[2], view=None)
-    except Exception:
-        pass
-    await asyncio.sleep(0.9)
-    try:
-        await interaction.edit_original_response(embed=final_embed, view=None)
-    except Exception:
-        await safe_interaction_send(interaction, embed=final_embed, ephemeral=True)
-
-
-
 async def process_shop_purchase(interaction: discord.Interaction, item_name: str) -> None:
     if interaction.guild is None:
         await safe_interaction_send(interaction, content="Ta akcja działa tylko na serwerze.", ephemeral=True)
@@ -965,7 +1016,7 @@ async def process_shop_purchase(interaction: discord.Interaction, item_name: str
             add_points(interaction.guild.id, member.id, int(reward["value"]))
             add_crate_history(interaction.guild.id, member.id, item_key, "points", str(reward["value"]))
             embed = crate_result_embed(item_key, "points", f"{reward['value']:,}".replace(",", " "), member)
-            await animate_crate_opening(interaction, item_key, member, embed)
+            await safe_interaction_send(interaction, embed=embed, ephemeral=True)
             return
 
         if reward["type"] == "role":
@@ -973,7 +1024,7 @@ async def process_shop_purchase(interaction: discord.Interaction, item_name: str
             if role is None:
                 add_crate_history(interaction.guild.id, member.id, item_key, "nothing", "brak_roli")
                 embed = crate_result_embed(item_key, "nothing", None, member)
-                await animate_crate_opening(interaction, item_key, member, embed)
+                await safe_interaction_send(interaction, embed=embed, ephemeral=True)
                 return
 
             if role in member.roles:
@@ -986,7 +1037,7 @@ async def process_shop_purchase(interaction: discord.Interaction, item_name: str
                     description=f"Miałeś już **{role.name}**, więc dostałeś **{consolation} pkt**.",
                     color=discord.Color.orange(),
                 )
-                await animate_crate_opening(interaction, item_key, member, embed)
+                await safe_interaction_send(interaction, embed=embed, ephemeral=True)
                 return
 
             try:
@@ -998,7 +1049,7 @@ async def process_shop_purchase(interaction: discord.Interaction, item_name: str
                 await member.add_roles(role, reason=f"Skrzynka: {item_key}")
                 add_crate_history(interaction.guild.id, member.id, item_key, "role", role.name)
                 embed = crate_result_embed(item_key, "role", role.name, member)
-                await animate_crate_opening(interaction, item_key, member, embed)
+                await safe_interaction_send(interaction, embed=embed, ephemeral=True)
                 return
             except discord.Forbidden:
                 await safe_interaction_send(
@@ -1011,8 +1062,26 @@ async def process_shop_purchase(interaction: discord.Interaction, item_name: str
         if reward["type"] == "nothing":
             add_crate_history(interaction.guild.id, member.id, item_key, "nothing", None)
             embed = crate_result_embed(item_key, "nothing", None, member)
-            await animate_crate_opening(interaction, item_key, member, embed)
+            await safe_interaction_send(interaction, embed=embed, ephemeral=True)
             return
+
+    if item_key == "xp_booster":
+        now_ts = int(time.time())
+        if get_active_xp_boost(interaction.guild.id, member.id) > 1.0:
+            await safe_interaction_send(interaction, content="❌ Masz już aktywny booster XP.", ephemeral=True)
+            return
+
+        remove_total_points(interaction.guild.id, member.id, item_price)
+        set_xp_boost(interaction.guild.id, member.id, 1.25, now_ts + 3600)
+
+        embed = discord.Embed(
+            title="⚡ Booster XP aktywowany",
+            description="Masz **+25% XP przez 1 godzinę**.",
+            color=discord.Color.orange()
+        )
+        embed.add_field(name="Czas działania", value="1 godzina", inline=False)
+        await safe_interaction_send(interaction, embed=embed, ephemeral=True)
+        return
 
     # Zwykłe itemy sklepowe
     role_id = item.get("role_id")
@@ -1075,6 +1144,8 @@ async def process_shop_purchase(interaction: discord.Interaction, item_name: str
             embed.add_field(name="⭐ Bonus VIP", value="Masz teraz +20% punktów.", inline=False)
         elif role and role.id == SIGMA_ROLE_ID:
             embed.add_field(name="😎 SIGMA", value="Masz rangę SIGMA.", inline=False)
+        elif role and role.id == AURA_ROLE_ID:
+            embed.add_field(name="🌌 AURA", value="Masz prestiżową rolę AURA.", inline=False)
         elif item_key == "auto_prywatny_kanal" and created_channel is not None:
             embed.add_field(name="🛠️ Twój kanał", value=f"Gotowe: **{created_channel.name}**", inline=False)
 
@@ -1155,6 +1226,14 @@ class ShopView(discord.ui.View):
     async def buy_crate_basic(self, interaction: discord.Interaction, button: discord.ui.Button):
         await process_shop_purchase(interaction, "crate_basic")
 
+    @discord.ui.button(label="Mystery", emoji="🎰", style=discord.ButtonStyle.secondary, custom_id="shop_crate_mystery", row=0)
+    async def buy_crate_mystery(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await process_shop_purchase(interaction, "crate_mystery")
+
+    @discord.ui.button(label="Booster XP", emoji="⚡", style=discord.ButtonStyle.primary, custom_id="shop_xp_booster", row=0)
+    async def buy_xp_booster(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await process_shop_purchase(interaction, "xp_booster")
+
     @discord.ui.button(label="Premium", emoji="🎁", style=discord.ButtonStyle.secondary, custom_id="shop_crate_premium", row=0)
     async def buy_crate_premium(self, interaction: discord.Interaction, button: discord.ui.Button):
         await process_shop_purchase(interaction, "crate_premium")
@@ -1163,9 +1242,13 @@ class ShopView(discord.ui.View):
     async def buy_auto_private_channel(self, interaction: discord.Interaction, button: discord.ui.Button):
         await process_shop_purchase(interaction, "auto_prywatny_kanal")
 
-    @discord.ui.button(label="SIGMA", emoji="😎", style=discord.ButtonStyle.secondary, custom_id="shop_sigma", row=0)
+    @discord.ui.button(label="SIGMA", emoji="😎", style=discord.ButtonStyle.secondary, custom_id="shop_sigma", row=1)
     async def buy_sigma(self, interaction: discord.Interaction, button: discord.ui.Button):
         await process_shop_purchase(interaction, "sigma")
+
+    @discord.ui.button(label="AURA", emoji="🌌", style=discord.ButtonStyle.secondary, custom_id="shop_aura", row=1)
+    async def buy_aura(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await process_shop_purchase(interaction, "aura")
 
     @discord.ui.button(label="VIP", emoji="⭐", style=discord.ButtonStyle.success, custom_id="shop_vip", row=1)
     async def buy_vip(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -1355,7 +1438,7 @@ async def sklep(interaction: discord.Interaction):
 
 
 @bot.tree.command(name="kup", description="Kup przedmiot ze sklepu")
-@app_commands.describe(przedmiot="np. crate_basic, crate_premium, auto_prywatny_kanal, sigma, vip, crate_legendary, legenda")
+@app_commands.describe(przedmiot="np. crate_basic, crate_mystery, xp_booster, crate_premium, auto_prywatny_kanal, sigma, aura, vip, crate_legendary, legenda")
 async def kup(interaction: discord.Interaction, przedmiot: str):
     await process_shop_purchase(interaction, przedmiot)
 
