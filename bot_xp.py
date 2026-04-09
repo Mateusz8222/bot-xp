@@ -1,4 +1,5 @@
 import os
+import random
 import time
 from typing import Optional
 
@@ -24,11 +25,10 @@ LEGEND_TEXT_CHANNEL_ID = 1490791025671803013 # 💎・legenda-czat
 LEGEND_VC_CHANNEL_ID = 1490792255504646407   # 💎・Legenda VC
 
 # =========================================================
-# AUTO PRYWATNE KANAŁY
+# AUTO PRYWATNE KANAŁY VC
 # =========================================================
 PRIVATE_CHANNEL_CATEGORY_NAME = "🔒 Prywatne kanały"
 PRIVATE_CHANNEL_PREFIX = "🔒・"
-PRIVATE_CHANNEL_TOPIC = "Kanał prywatny utworzony automatycznie po zakupie w sklepie."
 
 # =========================================================
 # ID RÓL
@@ -36,7 +36,11 @@ PRIVATE_CHANNEL_TOPIC = "Kanał prywatny utworzony automatycznie po zakupie w sk
 VIP_ROLE_ID = 1474567627895738388
 LEGEND_ROLE_ID = 1490683484262498335
 PRIVATE_CHANNEL_ROLE_ID = 1475970739986239620  # 🔑 moderator kanału prywatnego
-SIGMA_ROLE_ID = 1491572107539120128  # 😎 SIGMA
+SIGMA_ROLE_ID = 1491572107539120128            # 😎 SIGMA
+
+GOLD_MEDAL_ROLE_ID = 1491590645599441109
+SILVER_MEDAL_ROLE_ID = 1491589877291024486
+BRONZE_MEDAL_ROLE_ID = 1491588730249679108
 
 # =========================================================
 # USTAWIENIA XP
@@ -52,9 +56,68 @@ VIP_MULTIPLIER = 1.20
 LEGEND_MULTIPLIER = 1.40
 
 # =========================================================
+# SKRZYNKI
+# =========================================================
+CRATE_COOLDOWN_SECONDS = 30
+
+CRATE_CONFIG = {
+    "crate_basic": {
+        "price": 10000,
+        "label": "📦 Zwykła skrzynka",
+        "emoji": "📦",
+        "description": "Podstawowa skrzynka z punktami, szansą na medal i pustym dropem.",
+        "rewards": [
+            {"type": "role", "value": BRONZE_MEDAL_ROLE_ID, "weight": 10, "name": "🥉 Brązowy Medal"},
+            {"type": "nothing", "value": None, "weight": 15, "name": "❌ Pusta skrzynka"},
+            {"type": "points", "value": 5000, "weight": 20, "name": "5 000 pkt"},
+            {"type": "points", "value": 8000, "weight": 20, "name": "8 000 pkt"},
+            {"type": "points", "value": 12000, "weight": 20, "name": "12 000 pkt"},
+            {"type": "points", "value": 15000, "weight": 15, "name": "15 000 pkt"},
+        ],
+    },
+    "crate_premium": {
+        "price": 25000,
+        "label": "🎁 Premium skrzynka",
+        "emoji": "🎁",
+        "description": "Lepsze punkty, medale i szansa na rangę SIGMA.",
+        "rewards": [
+            {"type": "role", "value": BRONZE_MEDAL_ROLE_ID, "weight": 15, "name": "🥉 Brązowy Medal"},
+            {"type": "role", "value": SILVER_MEDAL_ROLE_ID, "weight": 8, "name": "🥈 Srebrny Medal"},
+            {"type": "role", "value": SIGMA_ROLE_ID, "weight": 5, "name": "😎 SIGMA"},
+            {"type": "nothing", "value": None, "weight": 12, "name": "❌ Pusta skrzynka"},
+            {"type": "points", "value": 15000, "weight": 20, "name": "15 000 pkt"},
+            {"type": "points", "value": 20000, "weight": 15, "name": "20 000 pkt"},
+            {"type": "points", "value": 30000, "weight": 15, "name": "30 000 pkt"},
+            {"type": "points", "value": 40000, "weight": 10, "name": "40 000 pkt"},
+        ],
+    },
+    "crate_legendary": {
+        "price": 60000,
+        "label": "💎 Legendarna skrzynka",
+        "emoji": "💎",
+        "description": "Najmocniejsza skrzynka z top nagrodami i legendarnymi dropami.",
+        "rewards": [
+            {"type": "role", "value": BRONZE_MEDAL_ROLE_ID, "weight": 15, "name": "🥉 Brązowy Medal"},
+            {"type": "role", "value": SILVER_MEDAL_ROLE_ID, "weight": 10, "name": "🥈 Srebrny Medal"},
+            {"type": "role", "value": GOLD_MEDAL_ROLE_ID, "weight": 5, "name": "🥇 Złoty Medal"},
+            {"type": "role", "value": VIP_ROLE_ID, "weight": 10, "name": "⭐ VIP"},
+            {"type": "role", "value": SIGMA_ROLE_ID, "weight": 10, "name": "😎 SIGMA"},
+            {"type": "role", "value": LEGEND_ROLE_ID, "weight": 3, "name": "💎 LEGENDA"},
+            {"type": "nothing", "value": None, "weight": 7, "name": "❌ Pusta skrzynka"},
+            {"type": "points", "value": 30000, "weight": 15, "name": "30 000 pkt"},
+            {"type": "points", "value": 50000, "weight": 10, "name": "50 000 pkt"},
+            {"type": "points", "value": 70000, "weight": 8, "name": "70 000 pkt"},
+            {"type": "points", "value": 100000, "weight": 7, "name": "100 000 pkt"},
+        ],
+    },
+}
+
+# =========================================================
 # SKLEP
 # =========================================================
 SHOP_ITEMS = {
+    "crate_basic": {"price": 10000, "label": "📦 Zwykła skrzynka"},
+    "crate_premium": {"price": 25000, "label": "🎁 Premium skrzynka"},
     "auto_prywatny_kanal": {
         "price": 30000,
         "role_id": PRIVATE_CHANNEL_ROLE_ID,
@@ -70,6 +133,7 @@ SHOP_ITEMS = {
         "role_id": VIP_ROLE_ID,
         "label": "⭐ VIP",
     },
+    "crate_legendary": {"price": 60000, "label": "💎 Legendarna skrzynka"},
     "legenda": {
         "price": 100000,
         "role_id": LEGEND_ROLE_ID,
@@ -120,6 +184,13 @@ def sql(query: str) -> str:
     return query
 
 
+def fetchone_dict(cur):
+    row = cur.fetchone()
+    if row is None:
+        return None
+    return dict(row)
+
+
 def init_db() -> None:
     conn = db_connect()
     cur = conn.cursor()
@@ -136,7 +207,6 @@ def init_db() -> None:
                 PRIMARY KEY (guild_id, user_id)
             )
         """)
-
         cur.execute("""
             CREATE TABLE IF NOT EXISTS panel_messages (
                 guild_id BIGINT NOT NULL,
@@ -144,6 +214,26 @@ def init_db() -> None:
                 channel_id BIGINT NOT NULL,
                 message_id BIGINT NOT NULL,
                 PRIMARY KEY (guild_id, panel_key)
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS crate_cooldowns (
+                guild_id BIGINT NOT NULL,
+                user_id BIGINT NOT NULL,
+                crate_key TEXT NOT NULL,
+                next_open_at BIGINT NOT NULL,
+                PRIMARY KEY (guild_id, user_id, crate_key)
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS crate_history (
+                id BIGSERIAL PRIMARY KEY,
+                guild_id BIGINT NOT NULL,
+                user_id BIGINT NOT NULL,
+                crate_key TEXT NOT NULL,
+                reward_type TEXT NOT NULL,
+                reward_value TEXT,
+                created_at BIGINT NOT NULL
             )
         """)
     else:
@@ -158,7 +248,6 @@ def init_db() -> None:
                 PRIMARY KEY (guild_id, user_id)
             )
         """)
-
         cur.execute("""
             CREATE TABLE IF NOT EXISTS panel_messages (
                 guild_id INTEGER NOT NULL,
@@ -168,16 +257,29 @@ def init_db() -> None:
                 PRIMARY KEY (guild_id, panel_key)
             )
         """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS crate_cooldowns (
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                crate_key TEXT NOT NULL,
+                next_open_at INTEGER NOT NULL,
+                PRIMARY KEY (guild_id, user_id, crate_key)
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS crate_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                crate_key TEXT NOT NULL,
+                reward_type TEXT NOT NULL,
+                reward_value TEXT,
+                created_at INTEGER NOT NULL
+            )
+        """)
 
     conn.commit()
     conn.close()
-
-
-def fetchone_dict(cur):
-    row = cur.fetchone()
-    if row is None:
-        return None
-    return dict(row)
 
 
 def ensure_user_row(guild_id: int, user_id: int) -> None:
@@ -204,7 +306,6 @@ def ensure_user_row(guild_id: int, user_id: int) -> None:
 
 def get_points_row(guild_id: int, user_id: int) -> Optional[dict]:
     ensure_user_row(guild_id, user_id)
-
     conn = db_connect()
     cur = conn.cursor()
     cur.execute(sql("""
@@ -219,7 +320,6 @@ def get_points_row(guild_id: int, user_id: int) -> Optional[dict]:
 
 def update_message_count(guild_id: int, user_id: int) -> int:
     ensure_user_row(guild_id, user_id)
-
     conn = db_connect()
     cur = conn.cursor()
     cur.execute(sql("""
@@ -240,8 +340,7 @@ def update_message_count(guild_id: int, user_id: int) -> int:
 
 def add_points_db(guild_id: int, user_id: int, *, text_points: int = 0, voice_points: int = 0) -> None:
     ensure_user_row(guild_id, user_id)
-    total_add = text_points + voice_points
-
+    total_add = int(text_points) + int(voice_points)
     conn = db_connect()
     cur = conn.cursor()
     cur.execute(sql("""
@@ -250,9 +349,13 @@ def add_points_db(guild_id: int, user_id: int, *, text_points: int = 0, voice_po
             voice_points = voice_points + ?,
             total_points = total_points + ?
         WHERE guild_id = ? AND user_id = ?
-    """), (text_points, voice_points, total_add, guild_id, user_id))
+    """), (int(text_points), int(voice_points), total_add, guild_id, user_id))
     conn.commit()
     conn.close()
+
+
+def add_points(guild_id: int, user_id: int, amount: int) -> None:
+    add_points_db(guild_id, user_id, text_points=int(amount), voice_points=0)
 
 
 def remove_total_points(guild_id: int, user_id: int, amount: int) -> None:
@@ -265,7 +368,7 @@ def remove_total_points(guild_id: int, user_id: int, amount: int) -> None:
             ELSE total_points - ?
         END
         WHERE guild_id = ? AND user_id = ?
-    """), (amount, amount, guild_id, user_id))
+    """), (int(amount), int(amount), guild_id, user_id))
     conn.commit()
     conn.close()
 
@@ -317,6 +420,65 @@ def get_panel_message(guild_id: int, panel_key: str) -> Optional[dict]:
     row = fetchone_dict(cur)
     conn.close()
     return row
+
+
+def get_crate_cooldown(guild_id: int, user_id: int, crate_key: str) -> int:
+    conn = db_connect()
+    cur = conn.cursor()
+    cur.execute(sql("""
+        SELECT next_open_at
+        FROM crate_cooldowns
+        WHERE guild_id = ? AND user_id = ? AND crate_key = ?
+    """), (guild_id, user_id, crate_key))
+    row = fetchone_dict(cur)
+    conn.close()
+    return int(row["next_open_at"]) if row else 0
+
+
+def set_crate_cooldown(guild_id: int, user_id: int, crate_key: str, next_open_at: int) -> None:
+    conn = db_connect()
+    cur = conn.cursor()
+    if USING_POSTGRES:
+        cur.execute("""
+            INSERT INTO crate_cooldowns (guild_id, user_id, crate_key, next_open_at)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (guild_id, user_id, crate_key)
+            DO UPDATE SET next_open_at = EXCLUDED.next_open_at
+        """, (guild_id, user_id, crate_key, int(next_open_at)))
+    else:
+        cur.execute("""
+            INSERT OR REPLACE INTO crate_cooldowns (guild_id, user_id, crate_key, next_open_at)
+            VALUES (?, ?, ?, ?)
+        """, (guild_id, user_id, crate_key, int(next_open_at)))
+    conn.commit()
+    conn.close()
+
+
+def add_crate_history(guild_id: int, user_id: int, crate_key: str, reward_type: str, reward_value: Optional[str]) -> None:
+    conn = db_connect()
+    cur = conn.cursor()
+    cur.execute(sql("""
+        INSERT INTO crate_history (guild_id, user_id, crate_key, reward_type, reward_value, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """), (guild_id, user_id, crate_key, reward_type, reward_value, int(time.time())))
+    conn.commit()
+    conn.close()
+
+
+def get_last_crate_history(guild_id: int, user_id: int, limit: int = 5) -> list[dict]:
+    conn = db_connect()
+    cur = conn.cursor()
+    cur.execute(sql("""
+        SELECT crate_key, reward_type, reward_value, created_at
+        FROM crate_history
+        WHERE guild_id = ? AND user_id = ?
+        ORDER BY created_at DESC
+        LIMIT ?
+    """), (guild_id, user_id, limit))
+    rows = cur.fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
 
 # =========================================================
 # BOT
@@ -414,7 +576,95 @@ def get_rank_prefix(member: Optional[discord.Member]) -> str:
         return "💎 "
     if VIP_ROLE_ID in role_ids:
         return "⭐ "
+    if SIGMA_ROLE_ID in role_ids:
+        return "😎 "
     return ""
+
+
+def get_reward_role_name(role_id: int) -> str:
+    mapping = {
+        BRONZE_MEDAL_ROLE_ID: "🥉 Brązowy Medal",
+        SILVER_MEDAL_ROLE_ID: "🥈 Srebrny Medal",
+        GOLD_MEDAL_ROLE_ID: "🥇 Złoty Medal",
+        SIGMA_ROLE_ID: "😎 SIGMA",
+        VIP_ROLE_ID: "⭐ VIP",
+        LEGEND_ROLE_ID: "💎 LEGENDA",
+    }
+    return mapping.get(role_id, f"Rola {role_id}")
+
+
+def sanitize_private_channel_name(name: str) -> str:
+    safe = name.lower().strip()
+    replacements = {
+        "ą": "a", "ć": "c", "ę": "e", "ł": "l", "ń": "n",
+        "ó": "o", "ś": "s", "ż": "z", "ź": "z",
+    }
+    for old, new in replacements.items():
+        safe = safe.replace(old, new)
+
+    allowed = []
+    for ch in safe:
+        if ch.isalnum() or ch in {"-", "_"}:
+            allowed.append(ch)
+        elif ch in {" ", "."}:
+            allowed.append("-")
+
+    safe = "".join(allowed)
+    while "--" in safe:
+        safe = safe.replace("--", "-")
+    safe = safe.strip("-_")
+    if not safe:
+        safe = "uzytkownik"
+    return f"{PRIVATE_CHANNEL_PREFIX}{safe[:80]}"
+
+
+async def create_or_get_private_channel_for_member(guild: discord.Guild, member: discord.Member) -> discord.VoiceChannel:
+    category = discord.utils.get(guild.categories, name=PRIVATE_CHANNEL_CATEGORY_NAME)
+    if category is None:
+        category = await guild.create_category(PRIVATE_CHANNEL_CATEGORY_NAME, reason="Auto prywatne kanały")
+
+    expected_name = sanitize_private_channel_name(member.display_name)
+
+    for channel in category.voice_channels:
+        overwrites = channel.overwrites_for(member)
+        if channel.name == expected_name or overwrites.view_channel is True:
+            return channel
+
+    bot_member = guild.me
+    overwrites = {
+        guild.default_role: discord.PermissionOverwrite(view_channel=False, connect=False),
+        member: discord.PermissionOverwrite(
+            view_channel=True,
+            connect=True,
+            speak=True,
+            stream=True,
+            use_voice_activation=True,
+        ),
+    }
+    if bot_member is not None:
+        overwrites[bot_member] = discord.PermissionOverwrite(
+            view_channel=True,
+            connect=True,
+            speak=True,
+            manage_channels=True,
+            move_members=True,
+        )
+
+    role = guild.get_role(PRIVATE_CHANNEL_ROLE_ID)
+    if role is not None:
+        overwrites[role] = discord.PermissionOverwrite(
+            view_channel=True,
+            connect=True,
+            speak=True,
+        )
+
+    channel = await guild.create_voice_channel(
+        name=expected_name,
+        category=category,
+        overwrites=overwrites,
+        reason=f"Auto prywatny kanał dla {member}",
+    )
+    return channel
 
 
 def points_embed_for_user(member: discord.Member, row: dict) -> discord.Embed:
@@ -458,6 +708,7 @@ def xpinfo_embed() -> discord.Embed:
         inline=False,
     )
     embed.add_field(name="⭐ Bonusy rang", value="VIP: +20%\nLEGENDA: +40%", inline=False)
+    embed.add_field(name="📦 Skrzynki", value="Mogą wypaść punkty, role, medale albo pusta skrzynka.", inline=False)
     embed.add_field(name="❌ Punkty VC nie lecą gdy", value="bot / mute / deaf / kanał AFK", inline=False)
     return embed
 
@@ -465,7 +716,7 @@ def xpinfo_embed() -> discord.Embed:
 def shop_embed() -> discord.Embed:
     embed = discord.Embed(
         title="🛒 Sklep punktów",
-        description="Kupuj role i funkcje za punkty aktywności.",
+        description="Kupuj role, funkcje i skrzynki za punkty aktywności.",
         color=discord.Color.gold(),
     )
 
@@ -480,6 +731,7 @@ def shop_embed() -> discord.Embed:
 
     embed.set_footer(text="Możesz kupować przyciskami albo komendą /kup")
     return embed
+
 
 def points_panel_embed() -> discord.Embed:
     return discord.Embed(
@@ -505,82 +757,62 @@ def xpinfo_panel_embed() -> discord.Embed:
     )
 
 
+def crate_result_embed(crate_key: str, reward_type: str, reward_value: Optional[str], member: discord.Member) -> discord.Embed:
+    crate = CRATE_CONFIG[crate_key]
+    color = discord.Color.random()
 
-def sanitize_private_channel_name(name: str) -> str:
-    safe = name.lower().strip()
-    replacements = {
-        "ą": "a", "ć": "c", "ę": "e", "ł": "l", "ń": "n",
-        "ó": "o", "ś": "s", "ż": "z", "ź": "z",
-    }
-    for old, new in replacements.items():
-        safe = safe.replace(old, new)
+    if reward_type == "points":
+        title = f"{crate['emoji']} Otworzyłeś {crate['label']}"
+        desc = f"🎉 **{member.display_name}** wygrał **{reward_value} pkt**!"
+        color = discord.Color.green()
+    elif reward_type == "role":
+        title = f"{crate['emoji']} Otworzyłeś {crate['label']}"
+        desc = f"🏅 **{member.display_name}** zdobył **{reward_value}**!"
+        color = discord.Color.gold()
+    else:
+        title = f"{crate['emoji']} Otworzyłeś {crate['label']}"
+        desc = f"❌ **{member.display_name}** trafił pustą skrzynkę."
+        color = discord.Color.red()
 
-    allowed = []
-    for ch in safe:
-        if ch.isalnum() or ch in {"-", "_"}:
-            allowed.append(ch)
-        elif ch in {" ", "."}:
-            allowed.append("-")
-
-    safe = "".join(allowed)
-    while "--" in safe:
-        safe = safe.replace("--", "-")
-    safe = safe.strip("-_")
-    if not safe:
-        safe = "uzytkownik"
-    return f"{PRIVATE_CHANNEL_PREFIX}{safe[:80]}"
+    embed = discord.Embed(title=title, description=desc, color=color)
+    embed.set_footer(text="Powodzenia przy następnym otwarciu 😎")
+    return embed
 
 
-async def create_or_get_private_channel_for_member(guild: discord.Guild, member: discord.Member) -> discord.VoiceChannel:
-    category = discord.utils.get(guild.categories, name=PRIVATE_CHANNEL_CATEGORY_NAME)
-    if category is None:
-        category = await guild.create_category(PRIVATE_CHANNEL_CATEGORY_NAME, reason="Auto prywatne kanały")
-
-    expected_name = sanitize_private_channel_name(member.display_name)
-
-    for channel in category.voice_channels:
-        overwrites = channel.overwrites_for(member)
-        if channel.name == expected_name or overwrites.view_channel is True:
-            return channel
-
-    bot_member = guild.me
-    overwrites = {
-        guild.default_role: discord.PermissionOverwrite(view_channel=False),
-        member: discord.PermissionOverwrite(
-            view_channel=True,
-            send_messages=True,
-            read_message_history=True,
-            attach_files=True,
-            embed_links=True,
-            add_reactions=True,
-        ),
-    }
-    if bot_member is not None:
-        overwrites[bot_member] = discord.PermissionOverwrite(
-            view_channel=True,
-            send_messages=True,
-            manage_channels=True,
-            manage_messages=True,
-            read_message_history=True,
-        )
-
-    role = guild.get_role(PRIVATE_CHANNEL_ROLE_ID)
-    if role is not None:
-        overwrites[role] = discord.PermissionOverwrite(
-            view_channel=True,
-            send_messages=True,
-            read_message_history=True,
-        )
-
-    channel = await guild.create_voice_channel(
-        name=expected_name,
-        category=category,
-        topic=PRIVATE_CHANNEL_TOPIC,
-        overwrites=overwrites,
-        reason=f"Auto prywatny kanał dla {member}",
+def crate_history_embed(member: discord.Member, history: list[dict]) -> discord.Embed:
+    embed = discord.Embed(
+        title="📜 Ostatnie skrzynki",
+        description=f"Ostatnie otwarcia skrzynek użytkownika **{member.display_name}**",
+        color=discord.Color.blurple(),
     )
 
-    return channel
+    if not history:
+        embed.description = "Brak historii skrzynek."
+        return embed
+
+    lines = []
+    for item in history:
+        crate_label = CRATE_CONFIG.get(item["crate_key"], {}).get("label", item["crate_key"])
+        reward_type = item["reward_type"]
+        reward_value = item["reward_value"] or "nic"
+        ts = int(item["created_at"])
+        if reward_type == "points":
+            reward_text = f"{reward_value} pkt"
+        elif reward_type == "role":
+            reward_text = reward_value
+        else:
+            reward_text = "❌ pusta skrzynka"
+
+        lines.append(f"• **{crate_label}** → {reward_text} <t:{ts}:R>")
+
+    embed.description = "\n".join(lines)
+    return embed
+
+
+def choose_crate_reward(crate_key: str) -> dict:
+    rewards = CRATE_CONFIG[crate_key]["rewards"]
+    weights = [reward["weight"] for reward in rewards]
+    return random.choices(rewards, weights=weights, k=1)[0]
 
 
 async def ensure_panel_message(
@@ -645,14 +877,8 @@ async def process_shop_purchase(interaction: discord.Interaction, item_name: str
         return
 
     member = interaction.guild.get_member(interaction.user.id)
-    role = interaction.guild.get_role(item["role_id"])
-
     if member is None:
         await safe_interaction_send(interaction, content="❌ Nie udało się znaleźć użytkownika.", ephemeral=True)
-        return
-
-    if role is None:
-        await safe_interaction_send(interaction, content="❌ Nie udało się znaleźć roli sklepowej.", ephemeral=True)
         return
 
     row = get_points_row(interaction.guild.id, member.id)
@@ -660,12 +886,94 @@ async def process_shop_purchase(interaction: discord.Interaction, item_name: str
         await safe_interaction_send(interaction, content="❌ Nie masz jeszcze punktów.", ephemeral=True)
         return
 
-    if int(row["total_points"]) < int(item["price"]):
+    item_price = int(item["price"])
+    current_points = int(row["total_points"])
+
+    if current_points < item_price:
         await safe_interaction_send(
             interaction,
-            content=f"❌ Za mało punktów. Potrzebujesz **{item['price']} pkt**.",
+            content=f"❌ Za mało punktów. Potrzebujesz **{item_price} pkt**.",
             ephemeral=True
         )
+        return
+
+    # Skrzynki
+    if item_key in CRATE_CONFIG:
+        now_ts = int(time.time())
+        next_open_at = get_crate_cooldown(interaction.guild.id, member.id, item_key)
+        if next_open_at > now_ts:
+            left = next_open_at - now_ts
+            await safe_interaction_send(
+                interaction,
+                content=f"⏳ Ta skrzynka ma cooldown. Spróbuj ponownie za **{left} s**.",
+                ephemeral=True
+            )
+            return
+
+        remove_total_points(interaction.guild.id, member.id, item_price)
+        set_crate_cooldown(interaction.guild.id, member.id, item_key, now_ts + CRATE_COOLDOWN_SECONDS)
+
+        reward = choose_crate_reward(item_key)
+
+        if reward["type"] == "points":
+            add_points(interaction.guild.id, member.id, int(reward["value"]))
+            add_crate_history(interaction.guild.id, member.id, item_key, "points", str(reward["value"]))
+            embed = crate_result_embed(item_key, "points", f"{reward['value']:,}".replace(",", " "), member)
+            await safe_interaction_send(interaction, embed=embed, ephemeral=True)
+            return
+
+        if reward["type"] == "role":
+            role = interaction.guild.get_role(int(reward["value"]))
+            if role is None:
+                add_crate_history(interaction.guild.id, member.id, item_key, "nothing", "brak_roli")
+                embed = crate_result_embed(item_key, "nothing", None, member)
+                await safe_interaction_send(interaction, embed=embed, ephemeral=True)
+                return
+
+            if role in member.roles:
+                # jeśli już ma rolę, zamień na punkty pocieszenia
+                consolation = 5000
+                add_points(interaction.guild.id, member.id, consolation)
+                add_crate_history(interaction.guild.id, member.id, item_key, "points", str(consolation))
+                embed = discord.Embed(
+                    title=f"{CRATE_CONFIG[item_key]['emoji']} Duplikat nagrody",
+                    description=f"Miałeś już **{role.name}**, więc dostałeś **{consolation} pkt**.",
+                    color=discord.Color.orange(),
+                )
+                await safe_interaction_send(interaction, embed=embed, ephemeral=True)
+                return
+
+            try:
+                if role.id == LEGEND_ROLE_ID:
+                    vip_role = interaction.guild.get_role(VIP_ROLE_ID)
+                    if vip_role and vip_role in member.roles:
+                        await member.remove_roles(vip_role, reason="Awans na LEGENDĘ ze skrzynki")
+
+                await member.add_roles(role, reason=f"Skrzynka: {item_key}")
+                add_crate_history(interaction.guild.id, member.id, item_key, "role", role.name)
+                embed = crate_result_embed(item_key, "role", role.name, member)
+                await safe_interaction_send(interaction, embed=embed, ephemeral=True)
+                return
+            except discord.Forbidden:
+                await safe_interaction_send(
+                    interaction,
+                    content="❌ Bot nie może nadać tej roli. Ustaw rolę bota wyżej.",
+                    ephemeral=True
+                )
+                return
+
+        if reward["type"] == "nothing":
+            add_crate_history(interaction.guild.id, member.id, item_key, "nothing", None)
+            embed = crate_result_embed(item_key, "nothing", None, member)
+            await safe_interaction_send(interaction, embed=embed, ephemeral=True)
+            return
+
+    # Zwykłe itemy sklepowe
+    role_id = item.get("role_id")
+    role = interaction.guild.get_role(int(role_id)) if role_id else None
+
+    if role_id and role is None:
+        await safe_interaction_send(interaction, content="❌ Nie udało się znaleźć roli sklepowej.", ephemeral=True)
         return
 
     if item_key == "auto_prywatny_kanal":
@@ -682,19 +990,18 @@ async def process_shop_purchase(interaction: discord.Interaction, item_name: str
             if existing_channel is not None:
                 await safe_interaction_send(
                     interaction,
-                    content=f"❌ Masz już prywatny kanał: {existing_channel.mention}",
+                    content=f"❌ Masz już prywatny kanał: **{existing_channel.name}**",
                     ephemeral=True,
                 )
                 return
         except Exception:
             pass
-
-    elif role in member.roles:
+    elif role and role in member.roles:
         await safe_interaction_send(interaction, content="❌ Masz już tę rolę.", ephemeral=True)
         return
 
     try:
-        if role.id == LEGEND_ROLE_ID:
+        if role and role.id == LEGEND_ROLE_ID:
             vip_role = interaction.guild.get_role(VIP_ROLE_ID)
             if vip_role and vip_role in member.roles:
                 await member.remove_roles(vip_role, reason="Awans na LEGENDĘ")
@@ -705,35 +1012,37 @@ async def process_shop_purchase(interaction: discord.Interaction, item_name: str
             await member.add_roles(role, reason=f"Zakup w sklepie: {item_key}")
             created_channel = await create_or_get_private_channel_for_member(interaction.guild, member)
         else:
-            await member.add_roles(role, reason=f"Zakup w sklepie: {item_key}")
+            if role:
+                await member.add_roles(role, reason=f"Zakup w sklepie: {item_key}")
 
-        remove_total_points(interaction.guild.id, member.id, int(item["price"]))
+        remove_total_points(interaction.guild.id, member.id, item_price)
 
         embed = discord.Embed(
             title="✅ Zakup udany",
-            description=f"Kupiłeś **{item['label']}** za **{item['price']} pkt**.",
+            description=f"Kupiłeś **{item['label']}** za **{item_price} pkt**.",
             color=discord.Color.green()
         )
 
-        if role.id == LEGEND_ROLE_ID:
+        if role and role.id == LEGEND_ROLE_ID:
             embed.add_field(name="💎 Bonus Legendy", value="Masz teraz +40% punktów i dostęp do kanałów legendy.", inline=False)
-        elif role.id == VIP_ROLE_ID:
+        elif role and role.id == VIP_ROLE_ID:
             embed.add_field(name="⭐ Bonus VIP", value="Masz teraz +20% punktów.", inline=False)
-        elif role.id == SIGMA_ROLE_ID:
+        elif role and role.id == SIGMA_ROLE_ID:
             embed.add_field(name="😎 SIGMA", value="Masz rangę SIGMA.", inline=False)
         elif item_key == "auto_prywatny_kanal" and created_channel is not None:
-            embed.add_field(name="🛠️ Twój kanał", value=f"Gotowe: {created_channel.mention}", inline=False)
+            embed.add_field(name="🛠️ Twój kanał", value=f"Gotowe: **{created_channel.name}**", inline=False)
 
         await safe_interaction_send(interaction, embed=embed, ephemeral=True)
 
     except discord.Forbidden:
         await safe_interaction_send(
             interaction,
-            content="❌ Bot nie może nadać tej roli. Ustaw rolę bota wyżej niż VIP i LEGENDA.",
+            content="❌ Bot nie może nadać tej roli lub utworzyć kanału. Ustaw rolę bota wyżej i daj Manage Channels.",
             ephemeral=True
         )
     except Exception as e:
         await safe_interaction_send(interaction, content=f"❌ Błąd przy zakupie: {e}", ephemeral=True)
+
 
 # =========================================================
 # GUI
@@ -781,11 +1090,28 @@ class XpInfoView(discord.ui.View):
     async def info_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         await safe_interaction_send(interaction, embed=xpinfo_embed(), ephemeral=True)
 
+    @discord.ui.button(label="📜 Historia skrzynek", style=discord.ButtonStyle.primary, custom_id="xp_crate_history_button")
+    async def history_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.guild is None or not isinstance(interaction.user, discord.Member):
+            await safe_interaction_send(interaction, content="Ta akcja działa tylko na serwerze.", ephemeral=True)
+            return
+
+        history = get_last_crate_history(interaction.guild.id, interaction.user.id, 5)
+        await safe_interaction_send(interaction, embed=crate_history_embed(interaction.user, history), ephemeral=True)
+
 
 class ShopView(discord.ui.View):
     def __init__(self, bot_instance: XPBot):
         super().__init__(timeout=None)
         self.bot = bot_instance
+
+    @discord.ui.button(label="Zwykła", emoji="📦", style=discord.ButtonStyle.secondary, custom_id="shop_crate_basic", row=0)
+    async def buy_crate_basic(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await process_shop_purchase(interaction, "crate_basic")
+
+    @discord.ui.button(label="Premium", emoji="🎁", style=discord.ButtonStyle.secondary, custom_id="shop_crate_premium", row=0)
+    async def buy_crate_premium(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await process_shop_purchase(interaction, "crate_premium")
 
     @discord.ui.button(label="Auto kanał", emoji="🛠️", style=discord.ButtonStyle.primary, custom_id="shop_auto_private_channel", row=0)
     async def buy_auto_private_channel(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -795,13 +1121,18 @@ class ShopView(discord.ui.View):
     async def buy_sigma(self, interaction: discord.Interaction, button: discord.ui.Button):
         await process_shop_purchase(interaction, "sigma")
 
-    @discord.ui.button(label="VIP", emoji="⭐", style=discord.ButtonStyle.success, custom_id="shop_vip", row=0)
+    @discord.ui.button(label="VIP", emoji="⭐", style=discord.ButtonStyle.success, custom_id="shop_vip", row=1)
     async def buy_vip(self, interaction: discord.Interaction, button: discord.ui.Button):
         await process_shop_purchase(interaction, "vip")
 
-    @discord.ui.button(label="LEGENDA", emoji="💎", style=discord.ButtonStyle.danger, custom_id="shop_legenda", row=0)
+    @discord.ui.button(label="Legendarna", emoji="💎", style=discord.ButtonStyle.primary, custom_id="shop_crate_legendary", row=1)
+    async def buy_crate_legendary(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await process_shop_purchase(interaction, "crate_legendary")
+
+    @discord.ui.button(label="LEGENDA", emoji="💎", style=discord.ButtonStyle.danger, custom_id="shop_legenda", row=1)
     async def buy_legenda(self, interaction: discord.Interaction, button: discord.ui.Button):
         await process_shop_purchase(interaction, "legenda")
+
 
 # =========================================================
 # EVENTY
@@ -856,6 +1187,7 @@ async def on_ready():
     except Exception as e:
         print(f"Błąd synchronizacji komend: {e}")
 
+
 # =========================================================
 # VC LOOP
 # =========================================================
@@ -885,13 +1217,13 @@ async def vc_loop():
         base_points = VC_POINTS_WITH_ACTIVE if active_count >= 2 else VC_POINTS_SOLO
 
         add_points_with_role_bonus(member, voice_points=full_intervals * base_points)
-
         bot.vc_active_since[(guild_id, user_id)] = started_at + (full_intervals * VC_INTERVAL_SECONDS)
 
 
 @vc_loop.before_loop
 async def before_vc_loop():
     await bot.wait_until_ready()
+
 
 # =========================================================
 # KOMENDY SLASH
@@ -977,9 +1309,19 @@ async def sklep(interaction: discord.Interaction):
 
 
 @bot.tree.command(name="kup", description="Kup przedmiot ze sklepu")
-@app_commands.describe(przedmiot="vip albo legenda")
+@app_commands.describe(przedmiot="np. crate_basic, crate_premium, auto_prywatny_kanal, sigma, vip, crate_legendary, legenda")
 async def kup(interaction: discord.Interaction, przedmiot: str):
     await process_shop_purchase(interaction, przedmiot)
+
+
+@bot.tree.command(name="skrzynki_historia", description="Pokazuje ostatnie otwarcia skrzynek")
+async def skrzynki_historia(interaction: discord.Interaction):
+    if interaction.guild is None or not isinstance(interaction.user, discord.Member):
+        await safe_interaction_send(interaction, content="Ta komenda działa tylko na serwerze.", ephemeral=True)
+        return
+
+    history = get_last_crate_history(interaction.guild.id, interaction.user.id, 5)
+    await safe_interaction_send(interaction, embed=crate_history_embed(interaction.user, history), ephemeral=True)
 
 
 @bot.tree.command(name="odswiez_panele", description="Odświeża wszystkie panele bota")
@@ -1002,6 +1344,7 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
             await safe_interaction_send(interaction, content=f"❌ Błąd komendy: {error}", ephemeral=True)
     except discord.InteractionResponded:
         await interaction.followup.send(f"❌ Błąd komendy: {error}", ephemeral=True)
+
 
 # =========================================================
 # START
