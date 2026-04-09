@@ -1,6 +1,7 @@
 import os
 import random
 import time
+from datetime import datetime, UTC
 from typing import Optional
 
 import discord
@@ -24,6 +25,7 @@ SHOP_CHANNEL_ID = 1490648124006338640        # 🛒・sklep
 LEGEND_TEXT_CHANNEL_ID = 1490791025671803013 # 💎・legenda-czat
 LEGEND_VC_CHANNEL_ID = 1490792255504646407   # 💎・Legenda VC
 SHOP_LOG_CHANNEL_ID = 1491934996745683035      # 📜・logi-pod-sklep
+ADMIN_LOG_CHANNEL_ID = 1491944667124596836     # 📜・logi-administracyjne
 
 # =========================================================
 # AUTO PRYWATNE KANAŁY VC
@@ -584,6 +586,37 @@ async def send_shop_log(guild: discord.Guild, embed: discord.Embed) -> None:
         await channel.send(embed=embed)
     except Exception:
         pass
+
+
+
+async def send_admin_log(guild: discord.Guild, embed: discord.Embed) -> None:
+    channel = guild.get_channel(ADMIN_LOG_CHANNEL_ID)
+    if channel is None or not isinstance(channel, discord.TextChannel):
+        return
+    try:
+        await channel.send(embed=embed)
+    except Exception:
+        pass
+
+
+async def get_recent_audit_actor_and_reason(
+    guild: discord.Guild,
+    action: discord.AuditLogAction,
+    target_id: int,
+    *,
+    seconds_back: int = 20,
+):
+    try:
+        async for entry in guild.audit_logs(limit=6, action=action):
+            if entry.target and getattr(entry.target, "id", None) == target_id:
+                created = entry.created_at
+                if created is not None:
+                    age = (datetime.now(UTC) - created).total_seconds()
+                    if age <= seconds_back:
+                        return entry.user, entry.reason
+    except Exception:
+        return None, None
+    return None, None
 
 
 
@@ -1318,6 +1351,100 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
             bot.vc_active_since[key] = time.time()
     else:
         bot.vc_active_since.pop(key, None)
+
+
+@bot.event
+async def on_member_join(member: discord.Member):
+    embed = discord.Embed(title="📥 Użytkownik dołączył", color=discord.Color.green())
+    embed.add_field(name="Użytkownik", value=f"{member.mention} ({member.id})", inline=False)
+    embed.add_field(name="Konto utworzone", value=f"<t:{int(member.created_at.timestamp())}:F>", inline=False)
+    await send_admin_log(member.guild, embed)
+
+
+@bot.event
+async def on_member_remove(member: discord.Member):
+    moderator, reason = await get_recent_audit_actor_and_reason(member.guild, discord.AuditLogAction.kick, member.id)
+    embed = discord.Embed(title="📤 Użytkownik opuścił serwer / został usunięty", color=discord.Color.red())
+    embed.add_field(name="Użytkownik", value=f"{member} ({member.id})", inline=False)
+    if moderator:
+        embed.add_field(name="Moderator", value=f"{moderator.mention}", inline=True)
+        embed.add_field(name="Akcja", value="Kick", inline=True)
+    if reason:
+        embed.add_field(name="Powód", value=reason, inline=False)
+    await send_admin_log(member.guild, embed)
+
+
+@bot.event
+async def on_member_ban(guild: discord.Guild, user: discord.User):
+    moderator, reason = await get_recent_audit_actor_and_reason(guild, discord.AuditLogAction.ban, user.id)
+    embed = discord.Embed(title="🔨 Ban", color=discord.Color.dark_red())
+    embed.add_field(name="Użytkownik", value=f"{user} ({user.id})", inline=False)
+    if moderator:
+        embed.add_field(name="Moderator", value=f"{moderator.mention}", inline=False)
+    embed.add_field(name="Powód", value=reason or "brak", inline=False)
+    await send_admin_log(guild, embed)
+
+
+@bot.event
+async def on_member_unban(guild: discord.Guild, user: discord.User):
+    moderator, reason = await get_recent_audit_actor_and_reason(guild, discord.AuditLogAction.unban, user.id)
+    embed = discord.Embed(title="🔓 Unban", color=discord.Color.green())
+    embed.add_field(name="Użytkownik", value=f"{user} ({user.id})", inline=False)
+    if moderator:
+        embed.add_field(name="Moderator", value=f"{moderator.mention}", inline=False)
+    embed.add_field(name="Powód", value=reason or "brak", inline=False)
+    await send_admin_log(guild, embed)
+
+
+@bot.event
+async def on_message_delete(message: discord.Message):
+    if message.guild is None or message.author.bot:
+        return
+    embed = discord.Embed(title="🗑️ Usunięto wiadomość", color=discord.Color.orange())
+    embed.add_field(name="Autor", value=f"{message.author.mention} ({message.author.id})", inline=False)
+    embed.add_field(name="Kanał", value=message.channel.mention, inline=False)
+    embed.add_field(name="Treść", value=(message.content[:1000] if message.content else "brak treści"), inline=False)
+    await send_admin_log(message.guild, embed)
+
+
+@bot.event
+async def on_message_edit(before: discord.Message, after: discord.Message):
+    if before.guild is None or before.author.bot:
+        return
+    if before.content == after.content:
+        return
+    embed = discord.Embed(title="✏️ Edytowano wiadomość", color=discord.Color.blue())
+    embed.add_field(name="Autor", value=f"{before.author.mention} ({before.author.id})", inline=False)
+    embed.add_field(name="Kanał", value=before.channel.mention, inline=False)
+    embed.add_field(name="Było", value=(before.content[:1000] if before.content else "brak treści"), inline=False)
+    embed.add_field(name="Jest", value=(after.content[:1000] if after.content else "brak treści"), inline=False)
+    await send_admin_log(before.guild, embed)
+
+
+@bot.event
+async def on_guild_channel_create(channel: discord.abc.GuildChannel):
+    embed = discord.Embed(title="➕ Utworzono kanał", color=discord.Color.green())
+    embed.add_field(name="Kanał", value=f"{channel.name} ({channel.id})", inline=False)
+    await send_admin_log(channel.guild, embed)
+
+
+@bot.event
+async def on_guild_channel_delete(channel: discord.abc.GuildChannel):
+    embed = discord.Embed(title="➖ Usunięto kanał", color=discord.Color.red())
+    embed.add_field(name="Kanał", value=f"{channel.name} ({channel.id})", inline=False)
+    await send_admin_log(channel.guild, embed)
+
+
+@bot.event
+async def on_guild_channel_update(before: discord.abc.GuildChannel, after: discord.abc.GuildChannel):
+    if before.name == after.name:
+        return
+    embed = discord.Embed(title="🛠️ Zmieniono kanał", color=discord.Color.blurple())
+    embed.add_field(name="Kanał", value=f"{before.id}", inline=False)
+    embed.add_field(name="Stara nazwa", value=before.name, inline=True)
+    embed.add_field(name="Nowa nazwa", value=after.name, inline=True)
+    await send_admin_log(after.guild, embed)
+
 
 
 @bot.event
