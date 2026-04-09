@@ -1,4 +1,5 @@
 import os
+import asyncio
 import random
 import time
 from typing import Optional
@@ -762,19 +763,20 @@ def crate_result_embed(crate_key: str, reward_type: str, reward_value: Optional[
     color = discord.Color.random()
 
     if reward_type == "points":
-        title = f"{crate['emoji']} Otworzyłeś {crate['label']}"
+        title = f"{crate['emoji']} Skrzynka otwarta!"
         desc = f"🎉 **{member.display_name}** wygrał **{reward_value} pkt**!"
         color = discord.Color.green()
     elif reward_type == "role":
-        title = f"{crate['emoji']} Otworzyłeś {crate['label']}"
+        title = f"{crate['emoji']} Skrzynka otwarta!"
         desc = f"🏅 **{member.display_name}** zdobył **{reward_value}**!"
         color = discord.Color.gold()
     else:
-        title = f"{crate['emoji']} Otworzyłeś {crate['label']}"
+        title = f"{crate['emoji']} Skrzynka otwarta!"
         desc = f"❌ **{member.display_name}** trafił pustą skrzynkę."
         color = discord.Color.red()
 
     embed = discord.Embed(title=title, description=desc, color=color)
+    embed.add_field(name="Typ skrzynki", value=crate["label"], inline=False)
     embed.set_footer(text="Powodzenia przy następnym otwarciu 😎")
     return embed
 
@@ -856,6 +858,50 @@ async def refresh_all_panels(guild: discord.Guild) -> None:
     await ensure_panel_message(guild, "shop", shop_embed(), ShopView(bot))
 
 
+async def animate_crate_opening(
+    interaction: discord.Interaction,
+    crate_key: str,
+    member: discord.Member,
+    final_embed: discord.Embed,
+) -> None:
+    crate = CRATE_CONFIG[crate_key]
+    phases = [
+        discord.Embed(
+            title=f"{crate['emoji']} Otwieranie skrzynki...",
+            description=f"**{member.display_name}** otwiera **{crate['label']}**",
+            color=discord.Color.blurple(),
+        ),
+        discord.Embed(
+            title="🎰 Losowanie nagrody...",
+            description="Kostki się toczą... zaraz zobaczymy co wypadnie.",
+            color=discord.Color.orange(),
+        ),
+        discord.Embed(
+            title="✨ Jeszcze chwila...",
+            description="System finalizuje wynik skrzynki.",
+            color=discord.Color.gold(),
+        ),
+    ]
+
+    await safe_interaction_send(interaction, embed=phases[0], ephemeral=True)
+    await asyncio.sleep(0.9)
+    try:
+        await interaction.edit_original_response(embed=phases[1], view=None)
+    except Exception:
+        pass
+    await asyncio.sleep(0.9)
+    try:
+        await interaction.edit_original_response(embed=phases[2], view=None)
+    except Exception:
+        pass
+    await asyncio.sleep(0.9)
+    try:
+        await interaction.edit_original_response(embed=final_embed, view=None)
+    except Exception:
+        await safe_interaction_send(interaction, embed=final_embed, ephemeral=True)
+
+
+
 async def process_shop_purchase(interaction: discord.Interaction, item_name: str) -> None:
     if interaction.guild is None:
         await safe_interaction_send(interaction, content="Ta akcja działa tylko na serwerze.", ephemeral=True)
@@ -919,7 +965,7 @@ async def process_shop_purchase(interaction: discord.Interaction, item_name: str
             add_points(interaction.guild.id, member.id, int(reward["value"]))
             add_crate_history(interaction.guild.id, member.id, item_key, "points", str(reward["value"]))
             embed = crate_result_embed(item_key, "points", f"{reward['value']:,}".replace(",", " "), member)
-            await safe_interaction_send(interaction, embed=embed, ephemeral=True)
+            await animate_crate_opening(interaction, item_key, member, embed)
             return
 
         if reward["type"] == "role":
@@ -927,7 +973,7 @@ async def process_shop_purchase(interaction: discord.Interaction, item_name: str
             if role is None:
                 add_crate_history(interaction.guild.id, member.id, item_key, "nothing", "brak_roli")
                 embed = crate_result_embed(item_key, "nothing", None, member)
-                await safe_interaction_send(interaction, embed=embed, ephemeral=True)
+                await animate_crate_opening(interaction, item_key, member, embed)
                 return
 
             if role in member.roles:
@@ -940,7 +986,7 @@ async def process_shop_purchase(interaction: discord.Interaction, item_name: str
                     description=f"Miałeś już **{role.name}**, więc dostałeś **{consolation} pkt**.",
                     color=discord.Color.orange(),
                 )
-                await safe_interaction_send(interaction, embed=embed, ephemeral=True)
+                await animate_crate_opening(interaction, item_key, member, embed)
                 return
 
             try:
@@ -952,7 +998,7 @@ async def process_shop_purchase(interaction: discord.Interaction, item_name: str
                 await member.add_roles(role, reason=f"Skrzynka: {item_key}")
                 add_crate_history(interaction.guild.id, member.id, item_key, "role", role.name)
                 embed = crate_result_embed(item_key, "role", role.name, member)
-                await safe_interaction_send(interaction, embed=embed, ephemeral=True)
+                await animate_crate_opening(interaction, item_key, member, embed)
                 return
             except discord.Forbidden:
                 await safe_interaction_send(
@@ -965,7 +1011,7 @@ async def process_shop_purchase(interaction: discord.Interaction, item_name: str
         if reward["type"] == "nothing":
             add_crate_history(interaction.guild.id, member.id, item_key, "nothing", None)
             embed = crate_result_embed(item_key, "nothing", None, member)
-            await safe_interaction_send(interaction, embed=embed, ephemeral=True)
+            await animate_crate_opening(interaction, item_key, member, embed)
             return
 
     # Zwykłe itemy sklepowe
