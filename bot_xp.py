@@ -23,6 +23,7 @@ SHOP_CHANNEL_ID = 1490648124006338640        # 🛒・sklep
 
 LEGEND_TEXT_CHANNEL_ID = 1490791025671803013 # 💎・legenda-czat
 LEGEND_VC_CHANNEL_ID = 1490792255504646407   # 💎・Legenda VC
+SHOP_LOG_CHANNEL_ID = 1491934996745683035      # 📜・logi-pod-sklep
 
 # =========================================================
 # AUTO PRYWATNE KANAŁY VC
@@ -575,6 +576,17 @@ def get_total_multiplier(member: discord.Member) -> float:
 
 
 
+async def send_shop_log(guild: discord.Guild, embed: discord.Embed) -> None:
+    channel = guild.get_channel(SHOP_LOG_CHANNEL_ID)
+    if channel is None or not isinstance(channel, discord.TextChannel):
+        return
+    try:
+        await channel.send(embed=embed)
+    except Exception:
+        pass
+
+
+
 # =========================================================
 # BOT
 # =========================================================
@@ -1081,6 +1093,12 @@ async def process_shop_purchase(interaction: discord.Interaction, item_name: str
         )
         embed.add_field(name="Czas działania", value="1 godzina", inline=False)
         await safe_interaction_send(interaction, embed=embed, ephemeral=True)
+
+        log_embed = discord.Embed(title="⚡ Aktywacja boostera", color=discord.Color.orange())
+        log_embed.add_field(name="Użytkownik", value=member.mention, inline=True)
+        log_embed.add_field(name="Item", value="⚡ Booster XP 1h", inline=True)
+        log_embed.add_field(name="Cena", value=f"{item_price} pkt", inline=True)
+        await send_shop_log(interaction.guild, log_embed)
         return
 
     # Zwykłe itemy sklepowe
@@ -1150,6 +1168,16 @@ async def process_shop_purchase(interaction: discord.Interaction, item_name: str
             embed.add_field(name="🛠️ Twój kanał", value=f"Gotowe: **{created_channel.name}**", inline=False)
 
         await safe_interaction_send(interaction, embed=embed, ephemeral=True)
+
+        log_embed = discord.Embed(title="💰 Zakup w sklepie", color=discord.Color.green())
+        log_embed.add_field(name="Użytkownik", value=member.mention, inline=True)
+        log_embed.add_field(name="Item", value=item["label"], inline=True)
+        log_embed.add_field(name="Cena", value=f"{item_price} pkt", inline=True)
+        if role is not None:
+            log_embed.add_field(name="Rola", value=role.mention, inline=False)
+        if item_key == "auto_prywatny_kanal" and created_channel is not None:
+            log_embed.add_field(name="Kanał", value=created_channel.name, inline=False)
+        await send_shop_log(interaction.guild, log_embed)
 
     except discord.Forbidden:
         await safe_interaction_send(
