@@ -416,6 +416,21 @@ def remove_total_points(guild_id: int, user_id: int, amount: int) -> None:
     conn.close()
 
 
+def reset_user_points(guild_id: int, user_id: int) -> None:
+    conn = db_connect()
+    cur = conn.cursor()
+    cur.execute(sql("""
+        UPDATE points
+        SET text_points = 0,
+            voice_points = 0,
+            total_points = 0,
+            message_count = 0
+        WHERE guild_id = ? AND user_id = ?
+    """), (guild_id, user_id))
+    conn.commit()
+    conn.close()
+
+
 def get_top_users(guild_id: int, limit: int = 10) -> list[dict]:
     conn = db_connect()
     cur = conn.cursor()
@@ -1379,12 +1394,15 @@ async def on_member_ban(guild: discord.Guild, user: discord.User):
     if not is_real_user(user):
         return
 
+    reset_user_points(guild.id, user.id)
+
     moderator, reason = await get_recent_audit_actor_and_reason(guild, discord.AuditLogAction.ban, user.id)
-    embed = discord.Embed(title="🔨 Ban", color=discord.Color.dark_red())
+    embed = discord.Embed(title="🔨 Ban + reset punktów", color=discord.Color.dark_red())
     embed.add_field(name="Użytkownik", value=f"{user} ({user.id})", inline=False)
     if moderator:
         embed.add_field(name="Moderator", value=f"{moderator.mention}", inline=False)
     embed.add_field(name="Powód", value=reason or "brak", inline=False)
+    embed.add_field(name="Punkty", value="Wyzerowane", inline=False)
     await send_admin_log(guild, embed)
 
 
