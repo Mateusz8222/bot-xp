@@ -1346,15 +1346,6 @@ async def on_message(message: discord.Message):
             add_points_with_role_bonus(member, text_points=TEXT_POINTS)
 
 
-@bot.event
-async def on_voice_state_update(member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
-    key = (member.guild.id, member.id)
-
-    if is_active_for_vc(member):
-        if key not in bot.vc_active_since:
-            bot.vc_active_since[key] = time.time()
-    else:
-        bot.vc_active_since.pop(key, None)
 
 
 @bot.event
@@ -1478,6 +1469,78 @@ async def on_guild_channel_update(before: discord.abc.GuildChannel, after: disco
         embed.add_field(name="Powód", value=reason, inline=False)
 
     await send_admin_log(after.guild, embed)
+
+
+
+@bot.event
+async def on_voice_state_update(member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
+    key = (member.guild.id, member.id)
+
+    if is_active_for_vc(member):
+        if key not in bot.vc_active_since:
+            bot.vc_active_since[key] = time.time()
+    else:
+        bot.vc_active_since.pop(key, None)
+
+    if not is_real_user(member):
+        return
+
+    current_channel = after.channel or before.channel
+    current_channel_value = current_channel.mention if current_channel else "brak"
+
+    if before.channel != after.channel:
+        if before.channel is None and after.channel is not None:
+            embed = discord.Embed(title="🔊 Wejście na VC", color=discord.Color.green())
+            embed.add_field(name="Użytkownik", value=f"{member.mention} ({member.id})", inline=False)
+            embed.add_field(name="Kanał", value=after.channel.mention, inline=False)
+            await send_admin_log(member.guild, embed)
+        elif before.channel is not None and after.channel is None:
+            embed = discord.Embed(title="📤 Wyjście z VC", color=discord.Color.red())
+            embed.add_field(name="Użytkownik", value=f"{member.mention} ({member.id})", inline=False)
+            embed.add_field(name="Kanał", value=before.channel.mention, inline=False)
+            await send_admin_log(member.guild, embed)
+        elif before.channel is not None and after.channel is not None:
+            embed = discord.Embed(title="🔁 Przeniesienie na VC", color=discord.Color.blurple())
+            embed.add_field(name="Użytkownik", value=f"{member.mention} ({member.id})", inline=False)
+            embed.add_field(name="Z kanału", value=before.channel.mention, inline=True)
+            embed.add_field(name="Na kanał", value=after.channel.mention, inline=True)
+            await send_admin_log(member.guild, embed)
+
+    if before.self_mute != after.self_mute:
+        embed = discord.Embed(
+            title="🔇 Self Mute" if after.self_mute else "🔊 Self Unmute",
+            color=discord.Color.orange()
+        )
+        embed.add_field(name="Użytkownik", value=f"{member.mention} ({member.id})", inline=False)
+        embed.add_field(name="Kanał", value=current_channel_value, inline=False)
+        await send_admin_log(member.guild, embed)
+
+    if before.self_deaf != after.self_deaf:
+        embed = discord.Embed(
+            title="🙉 Self Deaf" if after.self_deaf else "👂 Self Undeaf",
+            color=discord.Color.orange()
+        )
+        embed.add_field(name="Użytkownik", value=f"{member.mention} ({member.id})", inline=False)
+        embed.add_field(name="Kanał", value=current_channel_value, inline=False)
+        await send_admin_log(member.guild, embed)
+
+    if before.self_stream != after.self_stream:
+        embed = discord.Embed(
+            title="📡 Start streama" if after.self_stream else "🛑 Koniec streama",
+            color=discord.Color.purple()
+        )
+        embed.add_field(name="Użytkownik", value=f"{member.mention} ({member.id})", inline=False)
+        embed.add_field(name="Kanał", value=current_channel_value, inline=False)
+        await send_admin_log(member.guild, embed)
+
+    if before.self_video != after.self_video:
+        embed = discord.Embed(
+            title="🎥 Kamera włączona" if after.self_video else "📴 Kamera wyłączona",
+            color=discord.Color.teal()
+        )
+        embed.add_field(name="Użytkownik", value=f"{member.mention} ({member.id})", inline=False)
+        embed.add_field(name="Kanał", value=current_channel_value, inline=False)
+        await send_admin_log(member.guild, embed)
 
 
 
