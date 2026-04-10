@@ -1398,6 +1398,38 @@ async def on_member_ban(guild: discord.Guild, user: discord.User):
     embed.add_field(name="Dane", value="Usunięto z rankingu i systemu XP", inline=False)
     await send_admin_log(guild, embed)
 
+
+@bot.event
+async def on_member_update(before: discord.Member, after: discord.Member):
+    if not is_real_user(after):
+        return
+
+    if before.timed_out_until != after.timed_out_until:
+        moderator, reason = await get_recent_audit_actor_and_reason(
+            after.guild,
+            discord.AuditLogAction.member_update,
+            after.id
+        )
+        is_timeout = after.timed_out_until is not None and (before.timed_out_until != after.timed_out_until)
+
+        if is_timeout:
+            reset_user_points(after.guild.id, after.id)
+
+        title = "⏳ Timeout + reset punktów" if is_timeout else "✅ Zdjęto timeout"
+        color = discord.Color.orange() if is_timeout else discord.Color.green()
+        embed = discord.Embed(title=title, color=color)
+        embed.add_field(name="Użytkownik", value=f"{after.mention} ({after.id})", inline=False)
+
+        if moderator and not moderator.bot:
+            embed.add_field(name="Kto wyciszył", value=moderator.mention, inline=False)
+
+        if after.timed_out_until:
+            embed.add_field(name="Do kiedy", value=f"<t:{int(after.timed_out_until.timestamp())}:F>", inline=False)
+            embed.add_field(name="Punkty", value="Wyzerowane", inline=False)
+
+        embed.add_field(name="Powód", value=reason or "brak", inline=False)
+        await send_admin_log(after.guild, embed)
+
 @bot.event
 async def on_voice_state_update(member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
     key = (member.guild.id, member.id)
@@ -1422,6 +1454,10 @@ async def on_ready():
                 bot.vc_active_since[(guild.id, member.id)] = time.time()
 
         await refresh_all_panels(guild)
+
+        admin_log_channel = guild.get_channel(ADMIN_LOG_CHANNEL_ID)
+        if admin_log_channel is None:
+            print(f"⚠️ Nie znaleziono kanału logów administracyjnych na serwerze {guild.name}: {ADMIN_LOG_CHANNEL_ID}")
 
     if not vc_loop.is_running():
         vc_loop.start()
