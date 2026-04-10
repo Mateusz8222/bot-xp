@@ -1338,13 +1338,48 @@ async def on_message(message: discord.Message):
             add_points_with_role_bonus(member, text_points=TEXT_POINTS)
 
 @bot.event
+async def on_member_join(member: discord.Member):
+    if not is_real_user(member):
+        return
+
+    embed = discord.Embed(title="📥 Dołączenie na serwer", color=discord.Color.green())
+    embed.add_field(name="Użytkownik", value=f"{member.mention} ({member.id})", inline=False)
+    embed.add_field(name="Konto utworzone", value=f"<t:{int(member.created_at.timestamp())}:F>", inline=False)
+    await send_admin_log(member.guild, embed)
+
+@bot.event
 async def on_member_remove(member: discord.Member):
     if not is_real_user(member):
         return
 
     guild = member.guild
     bot.vc_active_since.pop((guild.id, member.id), None)
+
+    moderator, reason = await get_recent_audit_actor_and_reason(
+        guild,
+        discord.AuditLogAction.kick,
+        member.id
+    )
+
     delete_user_data(guild.id, member.id)
+
+    if moderator and moderator.bot:
+        return
+
+    if moderator:
+        embed = discord.Embed(title="👢 Wyrzucenie z serwera", color=discord.Color.red())
+        embed.add_field(name="Kogo wyrzucono", value=f"{member} ({member.id})", inline=False)
+        embed.add_field(name="Kto wyrzucił", value=moderator.mention, inline=False)
+        if reason:
+            embed.add_field(name="Powód", value=reason, inline=False)
+        else:
+            embed.add_field(name="Powód", value="brak", inline=False)
+        await send_admin_log(guild, embed)
+        return
+
+    embed = discord.Embed(title="📤 Wyjście z serwera", color=discord.Color.orange())
+    embed.add_field(name="Użytkownik", value=f"{member} ({member.id})", inline=False)
+    await send_admin_log(guild, embed)
 
 @bot.event
 async def on_member_ban(guild: discord.Guild, user: discord.User):
@@ -1356,9 +1391,9 @@ async def on_member_ban(guild: discord.Guild, user: discord.User):
 
     moderator, reason = await get_recent_audit_actor_and_reason(guild, discord.AuditLogAction.ban, user.id)
     embed = discord.Embed(title="🔨 Ban + usunięto dane punktów", color=discord.Color.dark_red())
-    embed.add_field(name="Użytkownik", value=f"{user} ({user.id})", inline=False)
+    embed.add_field(name="Kogo zbanowano", value=f"{user} ({user.id})", inline=False)
     if moderator:
-        embed.add_field(name="Moderator", value=f"{moderator.mention}", inline=False)
+        embed.add_field(name="Kto zbanował", value=f"{moderator.mention}", inline=False)
     embed.add_field(name="Powód", value=reason or "brak", inline=False)
     embed.add_field(name="Dane", value="Usunięto z rankingu i systemu XP", inline=False)
     await send_admin_log(guild, embed)
