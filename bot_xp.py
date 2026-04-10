@@ -1759,3 +1759,36 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+@bot.event
+async def on_member_remove(member: discord.Member):
+    if not is_real_user(member):
+        return
+
+    guild = member.guild
+
+    moderator, reason = await get_recent_audit_actor_and_reason(
+        guild,
+        discord.AuditLogAction.kick,
+        member.id
+    )
+
+    if moderator and moderator.bot:
+        return
+
+    # reset punktów
+    reset_user_points(guild.id, member.id)
+
+    embed = discord.Embed(title="👢 Kick + reset punktów", color=discord.Color.red())
+    embed.add_field(name="Użytkownik", value=f"{member} ({member.id})", inline=False)
+
+    if moderator:
+        embed.add_field(name="Moderator", value=moderator.mention, inline=False)
+
+    embed.add_field(name="Punkty", value="Wyzerowane", inline=False)
+
+    if reason:
+        embed.add_field(name="Powód", value=reason, inline=False)
+
+    await send_admin_log(guild, embed)
