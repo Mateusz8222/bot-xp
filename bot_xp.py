@@ -431,6 +431,34 @@ def reset_user_points(guild_id: int, user_id: int) -> None:
     conn.close()
 
 
+def delete_user_data(guild_id: int, user_id: int) -> None:
+    conn = db_connect()
+    cur = conn.cursor()
+
+    cur.execute(sql("""
+        DELETE FROM points
+        WHERE guild_id = ? AND user_id = ?
+    """), (guild_id, user_id))
+
+    cur.execute(sql("""
+        DELETE FROM xp_boosts
+        WHERE guild_id = ? AND user_id = ?
+    """), (guild_id, user_id))
+
+    cur.execute(sql("""
+        DELETE FROM crate_cooldowns
+        WHERE guild_id = ? AND user_id = ?
+    """), (guild_id, user_id))
+
+    cur.execute(sql("""
+        DELETE FROM crate_history
+        WHERE guild_id = ? AND user_id = ?
+    """), (guild_id, user_id))
+
+    conn.commit()
+    conn.close()
+
+
 def get_top_users(guild_id: int, limit: int = 10) -> list[dict]:
     conn = db_connect()
     cur = conn.cursor()
@@ -836,22 +864,30 @@ def points_embed_for_user(member: discord.Member, row: dict) -> discord.Embed:
 
 
 def ranking_embed(guild: discord.Guild) -> discord.Embed:
-    rows = get_top_users(guild.id, 10)
+    rows = get_top_users(guild.id, 50)
     embed = discord.Embed(title="🏆 Ranking serwera", color=discord.Color.gold())
 
-    if not rows:
-        embed.description = "Na tym serwerze nikt nie ma jeszcze punktów."
-        return embed
-
     lines = []
-    for index, row in enumerate(rows, start=1):
+    position = 1
+
+    for row in rows:
         member = guild.get_member(int(row["user_id"]))
-        name = member.display_name if member else f"Użytkownik {row['user_id']}"
+        if member is None or member.bot:
+            continue
+
         prefix = get_rank_prefix(member)
         lines.append(
-            f"**{index}.** {prefix}{name} — **{row['total_points']} pkt** "
+            f"**{position}.** {prefix}{member.display_name} — **{row['total_points']} pkt** "
             f"(💬 {row['text_points']} | 🎤 {row['voice_points']} | 📝 {row['message_count']})"
         )
+        position += 1
+
+        if position > 10:
+            break
+
+    if not lines:
+        embed.description = "Na tym serwerze nikt nie ma jeszcze punktów."
+        return embed
 
     embed.description = "\n".join(lines)
     return embed
@@ -1378,15 +1414,34 @@ async def on_member_remove(member: discord.Member):
     if not is_real_user(member):
         return
 
-    moderator, reason = await get_recent_audit_actor_and_reason(member.guild, discord.AuditLogAction.kick, member.id)
-    embed = discord.Embed(title="📤 Użytkownik opuścił serwer / został usunięty", color=discord.Color.red())
-    embed.add_field(name="Użytkownik", value=f"{member} ({member.id})", inline=False)
+    guild = member.guild
+    bot.vc_active_since.pop((guild.id, member.id), None)
+
+    moderator, reason = await get_recent_audit_actor_and_reason(
+        guild,
+        discord.AuditLogAction.kick,
+        member.id
+    )
+
+    delete_user_data(guild.id, member.id)
+
+    if moderator and moderator.bot:
+        return
+
     if moderator:
-        embed.add_field(name="Moderator", value=f"{moderator.mention}", inline=True)
-        embed.add_field(name="Akcja", value="Kick", inline=True)
-    if reason:
-        embed.add_field(name="Powód", value=reason, inline=False)
-    await send_admin_log(member.guild, embed)
+        embed = discord.Embed(title="👢 Kick + usunięto dane punktów", color=discord.Color.red())
+        embed.add_field(name="Użytkownik", value=f"{member} ({member.id})", inline=False)
+        embed.add_field(name="Moderator", value=moderator.mention, inline=False)
+        embed.add_field(name="Dane", value="Usunięto z rankingu i systemu XP", inline=False)
+        if reason:
+            embed.add_field(name="Powód", value=reason, inline=False)
+        await send_admin_log(guild, embed)
+        return
+
+    embed = discord.Embed(title="📤 Użytkownik opuścił serwer", color=discord.Color.orange())
+    embed.add_field(name="Użytkownik", value=f"{member} ({member.id})", inline=False)
+    embed.add_field(name="Dane", value="Usunięto z rankingu i systemu XP", inline=False)
+    await send_admin_log(guild, embed)
 
 
 @bot.event
@@ -1394,15 +1449,16 @@ async def on_member_ban(guild: discord.Guild, user: discord.User):
     if not is_real_user(user):
         return
 
-    reset_user_points(guild.id, user.id)
+    delete_user_data(guild.id, user.id)
+    bot.vc_active_since.pop((guild.id, user.id), None)
 
     moderator, reason = await get_recent_audit_actor_and_reason(guild, discord.AuditLogAction.ban, user.id)
-    embed = discord.Embed(title="🔨 Ban + reset punktów", color=discord.Color.dark_red())
+    embed = discord.Embed(title="🔨 Ban + usunięto dane punktów", color=discord.Color.dark_red())
     embed.add_field(name="Użytkownik", value=f"{user} ({user.id})", inline=False)
     if moderator:
         embed.add_field(name="Moderator", value=f"{moderator.mention}", inline=False)
     embed.add_field(name="Powód", value=reason or "brak", inline=False)
-    embed.add_field(name="Punkty", value="Wyzerowane", inline=False)
+    embed.add_field(name="Dane", value="Usunięto z rankingu i systemu XP", inline=False)
     await send_admin_log(guild, embed)
 
 
