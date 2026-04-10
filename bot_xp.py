@@ -189,7 +189,6 @@ else:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     SQLITE_DB_FILE = str(DATA_DIR / "xp.db")
 
-
 def db_connect():
     if USING_POSTGRES:
         conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
@@ -202,19 +201,16 @@ def db_connect():
     conn.execute("PRAGMA busy_timeout=5000")
     return conn
 
-
 def sql(query: str) -> str:
     if USING_POSTGRES:
         return query.replace("?", "%s")
     return query
-
 
 def fetchone_dict(cur):
     row = cur.fetchone()
     if row is None:
         return None
     return dict(row)
-
 
 def init_db() -> None:
     conn = db_connect()
@@ -324,7 +320,6 @@ def init_db() -> None:
     conn.commit()
     conn.close()
 
-
 def ensure_user_row(guild_id: int, user_id: int) -> None:
     conn = db_connect()
     cur = conn.cursor()
@@ -346,7 +341,6 @@ def ensure_user_row(guild_id: int, user_id: int) -> None:
     conn.commit()
     conn.close()
 
-
 def get_points_row(guild_id: int, user_id: int) -> Optional[dict]:
     ensure_user_row(guild_id, user_id)
     conn = db_connect()
@@ -359,7 +353,6 @@ def get_points_row(guild_id: int, user_id: int) -> Optional[dict]:
     row = fetchone_dict(cur)
     conn.close()
     return row
-
 
 def update_message_count(guild_id: int, user_id: int) -> int:
     ensure_user_row(guild_id, user_id)
@@ -380,7 +373,6 @@ def update_message_count(guild_id: int, user_id: int) -> int:
     conn.close()
     return int(count_row["message_count"]) if count_row else 0
 
-
 def add_points_db(guild_id: int, user_id: int, *, text_points: int = 0, voice_points: int = 0) -> None:
     ensure_user_row(guild_id, user_id)
     total_add = int(text_points) + int(voice_points)
@@ -396,10 +388,8 @@ def add_points_db(guild_id: int, user_id: int, *, text_points: int = 0, voice_po
     conn.commit()
     conn.close()
 
-
 def add_points(guild_id: int, user_id: int, amount: int) -> None:
     add_points_db(guild_id, user_id, text_points=int(amount), voice_points=0)
-
 
 def remove_total_points(guild_id: int, user_id: int, amount: int) -> None:
     conn = db_connect()
@@ -415,7 +405,6 @@ def remove_total_points(guild_id: int, user_id: int, amount: int) -> None:
     conn.commit()
     conn.close()
 
-
 def reset_user_points(guild_id: int, user_id: int) -> None:
     conn = db_connect()
     cur = conn.cursor()
@@ -429,7 +418,6 @@ def reset_user_points(guild_id: int, user_id: int) -> None:
     """), (guild_id, user_id))
     conn.commit()
     conn.close()
-
 
 def delete_user_data(guild_id: int, user_id: int) -> None:
     conn = db_connect()
@@ -458,7 +446,6 @@ def delete_user_data(guild_id: int, user_id: int) -> None:
     conn.commit()
     conn.close()
 
-
 def get_top_users(guild_id: int, limit: int = 10) -> list[dict]:
     conn = db_connect()
     cur = conn.cursor()
@@ -472,7 +459,6 @@ def get_top_users(guild_id: int, limit: int = 10) -> list[dict]:
     rows = cur.fetchall()
     conn.close()
     return [dict(row) for row in rows]
-
 
 def save_panel_message(guild_id: int, panel_key: str, channel_id: int, message_id: int) -> None:
     conn = db_connect()
@@ -494,7 +480,6 @@ def save_panel_message(guild_id: int, panel_key: str, channel_id: int, message_i
     conn.commit()
     conn.close()
 
-
 def get_panel_message(guild_id: int, panel_key: str) -> Optional[dict]:
     conn = db_connect()
     cur = conn.cursor()
@@ -507,7 +492,6 @@ def get_panel_message(guild_id: int, panel_key: str) -> Optional[dict]:
     conn.close()
     return row
 
-
 def get_crate_cooldown(guild_id: int, user_id: int, crate_key: str) -> int:
     conn = db_connect()
     cur = conn.cursor()
@@ -519,7 +503,6 @@ def get_crate_cooldown(guild_id: int, user_id: int, crate_key: str) -> int:
     row = fetchone_dict(cur)
     conn.close()
     return int(row["next_open_at"]) if row else 0
-
 
 def set_crate_cooldown(guild_id: int, user_id: int, crate_key: str, next_open_at: int) -> None:
     conn = db_connect()
@@ -539,7 +522,6 @@ def set_crate_cooldown(guild_id: int, user_id: int, crate_key: str, next_open_at
     conn.commit()
     conn.close()
 
-
 def add_crate_history(guild_id: int, user_id: int, crate_key: str, reward_type: str, reward_value: Optional[str]) -> None:
     conn = db_connect()
     cur = conn.cursor()
@@ -549,7 +531,6 @@ def add_crate_history(guild_id: int, user_id: int, crate_key: str, reward_type: 
     """), (guild_id, user_id, crate_key, reward_type, reward_value, int(time.time())))
     conn.commit()
     conn.close()
-
 
 def get_last_crate_history(guild_id: int, user_id: int, limit: int = 5) -> list[dict]:
     conn = db_connect()
@@ -564,7 +545,6 @@ def get_last_crate_history(guild_id: int, user_id: int, limit: int = 5) -> list[
     rows = cur.fetchall()
     conn.close()
     return [dict(row) for row in rows]
-
 
 def get_active_xp_boost(guild_id: int, user_id: int) -> float:
     now_ts = int(time.time())
@@ -584,7 +564,6 @@ def get_active_xp_boost(guild_id: int, user_id: int) -> float:
         return 1.0
     return float(row["multiplier"])
 
-
 def set_xp_boost(guild_id: int, user_id: int, multiplier: float, expires_at: int) -> None:
     conn = db_connect()
     cur = conn.cursor()
@@ -603,7 +582,6 @@ def set_xp_boost(guild_id: int, user_id: int, multiplier: float, expires_at: int
     conn.commit()
     conn.close()
 
-
 def clear_xp_boost(guild_id: int, user_id: int) -> None:
     conn = db_connect()
     cur = conn.cursor()
@@ -614,11 +592,8 @@ def clear_xp_boost(guild_id: int, user_id: int) -> None:
     conn.commit()
     conn.close()
 
-
 def get_total_multiplier(member: discord.Member) -> float:
     return get_member_multiplier(member) * get_active_xp_boost(member.guild.id, member.id)
-
-
 
 async def send_shop_log(guild: discord.Guild, embed: discord.Embed) -> None:
     channel = guild.get_channel(SHOP_LOG_CHANNEL_ID)
@@ -629,8 +604,6 @@ async def send_shop_log(guild: discord.Guild, embed: discord.Embed) -> None:
     except Exception:
         pass
 
-
-
 async def send_admin_log(guild: discord.Guild, embed: discord.Embed) -> None:
     channel = guild.get_channel(ADMIN_LOG_CHANNEL_ID)
     if channel is None or not isinstance(channel, discord.TextChannel):
@@ -639,7 +612,6 @@ async def send_admin_log(guild: discord.Guild, embed: discord.Embed) -> None:
         await channel.send(embed=embed)
     except Exception:
         pass
-
 
 async def get_recent_audit_actor_and_reason(
     guild: discord.Guild,
@@ -660,8 +632,6 @@ async def get_recent_audit_actor_and_reason(
         return None, None
     return None, None
 
-
-
 # =========================================================
 # BOT
 # =========================================================
@@ -681,7 +651,6 @@ class XPBot(commands.Bot):
         self.add_view(PointsView(self))
         self.add_view(RankingView(self))
         self.add_view(XpInfoView(self))
-
 
 bot = XPBot()
 
@@ -713,7 +682,6 @@ async def safe_interaction_send(
     except discord.InteractionResponded:
         await interaction.followup.send(**kwargs)
 
-
 def get_member_multiplier(member: discord.Member) -> float:
     role_ids = {role.id for role in member.roles}
     if LEGEND_ROLE_ID in role_ids:
@@ -722,13 +690,11 @@ def get_member_multiplier(member: discord.Member) -> float:
         return VIP_MULTIPLIER
     return 1.0
 
-
 def add_points_with_role_bonus(member: discord.Member, *, text_points: int = 0, voice_points: int = 0) -> None:
     multiplier = get_total_multiplier(member)
     final_text = int(text_points * multiplier)
     final_voice = int(voice_points * multiplier)
     add_points_db(member.guild.id, member.id, text_points=final_text, voice_points=final_voice)
-
 
 def is_active_for_vc(member: discord.Member) -> bool:
     if member.bot:
@@ -745,10 +711,8 @@ def is_active_for_vc(member: discord.Member) -> bool:
         return False
     return True
 
-
 def count_active_members_in_channel(channel: discord.VoiceChannel) -> int:
     return sum(1 for member in channel.members if is_active_for_vc(member))
-
 
 def get_rank_prefix(member: Optional[discord.Member]) -> str:
     if member is None:
@@ -761,7 +725,6 @@ def get_rank_prefix(member: Optional[discord.Member]) -> str:
     if SIGMA_ROLE_ID in role_ids:
         return "😎 "
     return ""
-
 
 def get_reward_role_name(role_id: int) -> str:
     mapping = {
@@ -776,8 +739,6 @@ def get_reward_role_name(role_id: int) -> str:
 
 def is_real_user(obj) -> bool:
     return not getattr(obj, "bot", False)
-
-
 
 def sanitize_private_channel_name(name: str) -> str:
     safe = name.lower().strip()
@@ -802,7 +763,6 @@ def sanitize_private_channel_name(name: str) -> str:
     if not safe:
         safe = "uzytkownik"
     return f"{PRIVATE_CHANNEL_PREFIX}{safe[:80]}"
-
 
 async def create_or_get_private_channel_for_member(guild: discord.Guild, member: discord.Member) -> discord.VoiceChannel:
     category = discord.utils.get(guild.categories, name=PRIVATE_CHANNEL_CATEGORY_NAME)
@@ -852,7 +812,6 @@ async def create_or_get_private_channel_for_member(guild: discord.Guild, member:
     )
     return channel
 
-
 def points_embed_for_user(member: discord.Member, row: dict) -> discord.Embed:
     embed = discord.Embed(title="🏆 Twoje punkty", color=discord.Color.blurple())
     embed.add_field(name="💬 Za wiadomości", value=str(row["text_points"]), inline=False)
@@ -861,7 +820,6 @@ def points_embed_for_user(member: discord.Member, row: dict) -> discord.Embed:
     embed.add_field(name="📝 Liczba wiadomości", value=str(row["message_count"]), inline=False)
     embed.set_footer(text=f"Użytkownik: {member.display_name}")
     return embed
-
 
 def ranking_embed(guild: discord.Guild) -> discord.Embed:
     rows = get_top_users(guild.id, 50)
@@ -892,7 +850,6 @@ def ranking_embed(guild: discord.Guild) -> discord.Embed:
     embed.description = "\n".join(lines)
     return embed
 
-
 def xpinfo_embed() -> discord.Embed:
     embed = discord.Embed(title="📘 Zasady punktów", color=discord.Color.orange())
     embed.add_field(name="💬 Wiadomości", value="2 punkty za każde 10 wiadomości", inline=False)
@@ -907,7 +864,6 @@ def xpinfo_embed() -> discord.Embed:
     embed.add_field(name="🌌 AURA", value="Prestiżowa rola wizualna do kupienia w sklepie.", inline=False)
     embed.add_field(name="❌ Punkty VC nie lecą gdy", value="bot / mute / deaf / kanał AFK", inline=False)
     return embed
-
 
 def shop_embed() -> discord.Embed:
     embed = discord.Embed(
@@ -928,14 +884,12 @@ def shop_embed() -> discord.Embed:
     embed.set_footer(text="Możesz kupować przyciskami albo komendą /kup")
     return embed
 
-
 def points_panel_embed() -> discord.Embed:
     return discord.Embed(
         title="📊 Punkty",
         description="Kliknij przycisk poniżej albo użyj `/punkty` w tym kanale.",
         color=discord.Color.blue(),
     )
-
 
 def ranking_panel_embed() -> discord.Embed:
     return discord.Embed(
@@ -944,14 +898,12 @@ def ranking_panel_embed() -> discord.Embed:
         color=discord.Color.gold(),
     )
 
-
 def xpinfo_panel_embed() -> discord.Embed:
     return discord.Embed(
         title="📘 Info XP",
         description="Kliknij przycisk poniżej albo użyj `/xpinfo` w tym kanale.",
         color=discord.Color.orange(),
     )
-
 
 def crate_result_embed(crate_key: str, reward_type: str, reward_value: Optional[str], member: discord.Member) -> discord.Embed:
     crate = CRATE_CONFIG[crate_key]
@@ -973,7 +925,6 @@ def crate_result_embed(crate_key: str, reward_type: str, reward_value: Optional[
     embed = discord.Embed(title=title, description=desc, color=color)
     embed.set_footer(text="Powodzenia przy następnym otwarciu 😎")
     return embed
-
 
 def crate_history_embed(member: discord.Member, history: list[dict]) -> discord.Embed:
     embed = discord.Embed(
@@ -1004,12 +955,10 @@ def crate_history_embed(member: discord.Member, history: list[dict]) -> discord.
     embed.description = "\n".join(lines)
     return embed
 
-
 def choose_crate_reward(crate_key: str) -> dict:
     rewards = CRATE_CONFIG[crate_key]["rewards"]
     weights = [reward["weight"] for reward in rewards]
     return random.choices(rewards, weights=weights, k=1)[0]
-
 
 async def ensure_panel_message(
     guild: discord.Guild,
@@ -1044,13 +993,11 @@ async def ensure_panel_message(
     except discord.HTTPException:
         pass
 
-
 async def refresh_all_panels(guild: discord.Guild) -> None:
     await ensure_panel_message(guild, "points", points_panel_embed(), PointsView(bot))
     await ensure_panel_message(guild, "ranking", ranking_panel_embed(), RankingView(bot))
     await ensure_panel_message(guild, "xpinfo", xpinfo_panel_embed(), XpInfoView(bot))
     await ensure_panel_message(guild, "shop", shop_embed(), ShopView(bot))
-
 
 async def process_shop_purchase(interaction: discord.Interaction, item_name: str) -> None:
     if interaction.guild is None:
@@ -1275,7 +1222,6 @@ async def process_shop_purchase(interaction: discord.Interaction, item_name: str
     except Exception as e:
         await safe_interaction_send(interaction, content=f"❌ Błąd przy zakupie: {e}", ephemeral=True)
 
-
 # =========================================================
 # GUI
 # =========================================================
@@ -1298,7 +1244,6 @@ class PointsView(discord.ui.View):
 
         await safe_interaction_send(interaction, embed=points_embed_for_user(member, row), ephemeral=True)
 
-
 class RankingView(discord.ui.View):
     def __init__(self, bot_instance: XPBot):
         super().__init__(timeout=None)
@@ -1311,7 +1256,6 @@ class RankingView(discord.ui.View):
             return
 
         await safe_interaction_send(interaction, embed=ranking_embed(interaction.guild), ephemeral=True)
-
 
 class XpInfoView(discord.ui.View):
     def __init__(self, bot_instance: XPBot):
@@ -1330,7 +1274,6 @@ class XpInfoView(discord.ui.View):
 
         history = get_last_crate_history(interaction.guild.id, interaction.user.id, 5)
         await safe_interaction_send(interaction, embed=crate_history_embed(interaction.user, history), ephemeral=True)
-
 
 class ShopView(discord.ui.View):
     def __init__(self, bot_instance: XPBot):
@@ -1377,7 +1320,6 @@ class ShopView(discord.ui.View):
     async def buy_legenda(self, interaction: discord.Interaction, button: discord.ui.Button):
         await process_shop_purchase(interaction, "legenda")
 
-
 # =========================================================
 # EVENTY
 # =========================================================
@@ -1395,20 +1337,6 @@ async def on_message(message: discord.Message):
         if member:
             add_points_with_role_bonus(member, text_points=TEXT_POINTS)
 
-
-
-
-@bot.event
-async def on_member_join(member: discord.Member):
-    if not is_real_user(member):
-        return
-
-    embed = discord.Embed(title="📥 Użytkownik dołączył", color=discord.Color.green())
-    embed.add_field(name="Użytkownik", value=f"{member.mention} ({member.id})", inline=False)
-    embed.add_field(name="Konto utworzone", value=f"<t:{int(member.created_at.timestamp())}:F>", inline=False)
-    await send_admin_log(member.guild, embed)
-
-
 @bot.event
 async def on_member_remove(member: discord.Member):
     if not is_real_user(member):
@@ -1416,33 +1344,7 @@ async def on_member_remove(member: discord.Member):
 
     guild = member.guild
     bot.vc_active_since.pop((guild.id, member.id), None)
-
-    moderator, reason = await get_recent_audit_actor_and_reason(
-        guild,
-        discord.AuditLogAction.kick,
-        member.id
-    )
-
     delete_user_data(guild.id, member.id)
-
-    if moderator and moderator.bot:
-        return
-
-    if moderator:
-        embed = discord.Embed(title="👢 Kick + usunięto dane punktów", color=discord.Color.red())
-        embed.add_field(name="Użytkownik", value=f"{member} ({member.id})", inline=False)
-        embed.add_field(name="Moderator", value=moderator.mention, inline=False)
-        embed.add_field(name="Dane", value="Usunięto z rankingu i systemu XP", inline=False)
-        if reason:
-            embed.add_field(name="Powód", value=reason, inline=False)
-        await send_admin_log(guild, embed)
-        return
-
-    embed = discord.Embed(title="📤 Użytkownik opuścił serwer", color=discord.Color.orange())
-    embed.add_field(name="Użytkownik", value=f"{member} ({member.id})", inline=False)
-    embed.add_field(name="Dane", value="Usunięto z rankingu i systemu XP", inline=False)
-    await send_admin_log(guild, embed)
-
 
 @bot.event
 async def on_member_ban(guild: discord.Guild, user: discord.User):
@@ -1461,90 +1363,6 @@ async def on_member_ban(guild: discord.Guild, user: discord.User):
     embed.add_field(name="Dane", value="Usunięto z rankingu i systemu XP", inline=False)
     await send_admin_log(guild, embed)
 
-
-@bot.event
-async def on_member_unban(guild: discord.Guild, user: discord.User):
-    if not is_real_user(user):
-        return
-
-    moderator, reason = await get_recent_audit_actor_and_reason(guild, discord.AuditLogAction.unban, user.id)
-    embed = discord.Embed(title="🔓 Unban", color=discord.Color.green())
-    embed.add_field(name="Użytkownik", value=f"{user} ({user.id})", inline=False)
-    if moderator:
-        embed.add_field(name="Moderator", value=f"{moderator.mention}", inline=False)
-    embed.add_field(name="Powód", value=reason or "brak", inline=False)
-    await send_admin_log(guild, embed)
-
-
-@bot.event
-async def on_message_delete(message: discord.Message):
-    if message.guild is None or message.author.bot:
-        return
-    embed = discord.Embed(title="🗑️ Usunięto wiadomość", color=discord.Color.orange())
-    embed.add_field(name="Autor", value=f"{message.author.mention} ({message.author.id})", inline=False)
-    embed.add_field(name="Kanał", value=message.channel.mention, inline=False)
-    embed.add_field(name="Treść", value=(message.content[:1000] if message.content else "brak treści"), inline=False)
-    await send_admin_log(message.guild, embed)
-
-
-@bot.event
-async def on_message_edit(before: discord.Message, after: discord.Message):
-    if before.guild is None or before.author.bot:
-        return
-    if before.content == after.content:
-        return
-    embed = discord.Embed(title="✏️ Edytowano wiadomość", color=discord.Color.blue())
-    embed.add_field(name="Autor", value=f"{before.author.mention} ({before.author.id})", inline=False)
-    embed.add_field(name="Kanał", value=before.channel.mention, inline=False)
-    embed.add_field(name="Było", value=(before.content[:1000] if before.content else "brak treści"), inline=False)
-    embed.add_field(name="Jest", value=(after.content[:1000] if after.content else "brak treści"), inline=False)
-    await send_admin_log(before.guild, embed)
-
-
-@bot.event
-async def on_guild_channel_create(channel: discord.abc.GuildChannel):
-    embed = discord.Embed(title="➕ Utworzono kanał", color=discord.Color.green())
-    embed.add_field(name="Kanał", value=f"{channel.name} ({channel.id})", inline=False)
-    await send_admin_log(channel.guild, embed)
-
-
-@bot.event
-async def on_guild_channel_delete(channel: discord.abc.GuildChannel):
-    embed = discord.Embed(title="➖ Usunięto kanał", color=discord.Color.red())
-    embed.add_field(name="Kanał", value=f"{channel.name} ({channel.id})", inline=False)
-    await send_admin_log(channel.guild, embed)
-
-
-@bot.event
-async def on_guild_channel_update(before: discord.abc.GuildChannel, after: discord.abc.GuildChannel):
-    if before.name == after.name:
-        return
-
-    moderator, reason = await get_recent_audit_actor_and_reason(
-        after.guild,
-        discord.AuditLogAction.channel_update,
-        after.id
-    )
-
-    if moderator and moderator.bot:
-        return
-
-    embed = discord.Embed(title="🛠️ Zmieniono kanał", color=discord.Color.blurple())
-    embed.add_field(name="Kanał", value=f"<#{after.id}>", inline=False)
-
-    if moderator:
-        embed.add_field(name="Kto zmienił", value=moderator.mention, inline=False)
-
-    embed.add_field(name="Stara nazwa", value=before.name, inline=True)
-    embed.add_field(name="Nowa nazwa", value=after.name, inline=True)
-
-    if reason:
-        embed.add_field(name="Powód", value=reason, inline=False)
-
-    await send_admin_log(after.guild, embed)
-
-
-
 @bot.event
 async def on_voice_state_update(member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
     key = (member.guild.id, member.id)
@@ -1554,68 +1372,6 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
             bot.vc_active_since[key] = time.time()
     else:
         bot.vc_active_since.pop(key, None)
-
-    if not is_real_user(member):
-        return
-
-    current_channel = after.channel or before.channel
-    current_channel_value = current_channel.mention if current_channel else "brak"
-
-    if before.channel != after.channel:
-        if before.channel is None and after.channel is not None:
-            embed = discord.Embed(title="🔊 Wejście na VC", color=discord.Color.green())
-            embed.add_field(name="Użytkownik", value=f"{member.mention} ({member.id})", inline=False)
-            embed.add_field(name="Kanał", value=after.channel.mention, inline=False)
-            await send_admin_log(member.guild, embed)
-        elif before.channel is not None and after.channel is None:
-            embed = discord.Embed(title="📤 Wyjście z VC", color=discord.Color.red())
-            embed.add_field(name="Użytkownik", value=f"{member.mention} ({member.id})", inline=False)
-            embed.add_field(name="Kanał", value=before.channel.mention, inline=False)
-            await send_admin_log(member.guild, embed)
-        elif before.channel is not None and after.channel is not None:
-            embed = discord.Embed(title="🔁 Przeniesienie na VC", color=discord.Color.blurple())
-            embed.add_field(name="Użytkownik", value=f"{member.mention} ({member.id})", inline=False)
-            embed.add_field(name="Z kanału", value=before.channel.mention, inline=True)
-            embed.add_field(name="Na kanał", value=after.channel.mention, inline=True)
-            await send_admin_log(member.guild, embed)
-
-    if before.self_mute != after.self_mute:
-        embed = discord.Embed(
-            title="🔇 Self Mute" if after.self_mute else "🔊 Self Unmute",
-            color=discord.Color.orange()
-        )
-        embed.add_field(name="Użytkownik", value=f"{member.mention} ({member.id})", inline=False)
-        embed.add_field(name="Kanał", value=current_channel_value, inline=False)
-        await send_admin_log(member.guild, embed)
-
-    if before.self_deaf != after.self_deaf:
-        embed = discord.Embed(
-            title="🙉 Self Deaf" if after.self_deaf else "👂 Self Undeaf",
-            color=discord.Color.orange()
-        )
-        embed.add_field(name="Użytkownik", value=f"{member.mention} ({member.id})", inline=False)
-        embed.add_field(name="Kanał", value=current_channel_value, inline=False)
-        await send_admin_log(member.guild, embed)
-
-    if before.self_stream != after.self_stream:
-        embed = discord.Embed(
-            title="📡 Start streama" if after.self_stream else "🛑 Koniec streama",
-            color=discord.Color.purple()
-        )
-        embed.add_field(name="Użytkownik", value=f"{member.mention} ({member.id})", inline=False)
-        embed.add_field(name="Kanał", value=current_channel_value, inline=False)
-        await send_admin_log(member.guild, embed)
-
-    if before.self_video != after.self_video:
-        embed = discord.Embed(
-            title="🎥 Kamera włączona" if after.self_video else "📴 Kamera wyłączona",
-            color=discord.Color.teal()
-        )
-        embed.add_field(name="Użytkownik", value=f"{member.mention} ({member.id})", inline=False)
-        embed.add_field(name="Kanał", value=current_channel_value, inline=False)
-        await send_admin_log(member.guild, embed)
-
-
 
 @bot.event
 async def on_ready():
@@ -1640,7 +1396,6 @@ async def on_ready():
         print(f"Zsynchronizowano {len(synced)} komend slash.")
     except Exception as e:
         print(f"Błąd synchronizacji komend: {e}")
-
 
 # =========================================================
 # VC LOOP
@@ -1676,11 +1431,9 @@ async def vc_loop():
         add_points_with_role_bonus(member, voice_points=full_intervals * points_per_interval)
         bot.vc_active_since[(guild_id, user_id)] = started_at + (full_intervals * VC_INTERVAL_SECONDS)
 
-
 @vc_loop.before_loop
 async def before_vc_loop():
     await bot.wait_until_ready()
-
 
 # =========================================================
 # KOMENDY SLASH
@@ -1703,7 +1456,6 @@ async def punkty(interaction: discord.Interaction):
         return
 
     await safe_interaction_send(interaction, embed=points_embed_for_user(member, row), ephemeral=True)
-
 
 @bot.tree.command(name="punkty_uzytkownika", description="Pokazuje punkty wybranego użytkownika")
 @app_commands.describe(uzytkownik="Wybierz użytkownika")
@@ -1729,7 +1481,6 @@ async def punkty_uzytkownika(interaction: discord.Interaction, uzytkownik: disco
 
     await safe_interaction_send(interaction, embed=embed, ephemeral=True)
 
-
 @bot.tree.command(name="ranking", description="Pokazuje ranking serwera")
 async def ranking(interaction: discord.Interaction):
     if interaction.guild is None:
@@ -1742,7 +1493,6 @@ async def ranking(interaction: discord.Interaction):
 
     await safe_interaction_send(interaction, embed=ranking_embed(interaction.guild))
 
-
 @bot.tree.command(name="xpinfo", description="Pokazuje zasady punktów")
 async def xpinfo(interaction: discord.Interaction):
     if interaction.channel_id != XPINFO_CHANNEL_ID:
@@ -1750,7 +1500,6 @@ async def xpinfo(interaction: discord.Interaction):
         return
 
     await safe_interaction_send(interaction, embed=xpinfo_embed())
-
 
 @bot.tree.command(name="sklep", description="Pokazuje sklep punktów")
 async def sklep(interaction: discord.Interaction):
@@ -1764,12 +1513,10 @@ async def sklep(interaction: discord.Interaction):
 
     await safe_interaction_send(interaction, embed=shop_embed(), view=ShopView(bot))
 
-
 @bot.tree.command(name="kup", description="Kup przedmiot ze sklepu")
 @app_commands.describe(przedmiot="np. crate_basic, crate_mystery, xp_booster, crate_premium, auto_prywatny_kanal, sigma, aura, vip, crate_legendary, legenda")
 async def kup(interaction: discord.Interaction, przedmiot: str):
     await process_shop_purchase(interaction, przedmiot)
-
 
 @bot.tree.command(name="skrzynki_historia", description="Pokazuje ostatnie otwarcia skrzynek")
 async def skrzynki_historia(interaction: discord.Interaction):
@@ -1779,7 +1526,6 @@ async def skrzynki_historia(interaction: discord.Interaction):
 
     history = get_last_crate_history(interaction.guild.id, interaction.user.id, 5)
     await safe_interaction_send(interaction, embed=crate_history_embed(interaction.user, history), ephemeral=True)
-
 
 @bot.tree.command(name="odswiez_panele", description="Odświeża wszystkie panele bota")
 @app_commands.checks.has_permissions(manage_guild=True)
@@ -1791,7 +1537,6 @@ async def odswiez_panele(interaction: discord.Interaction):
     await refresh_all_panels(interaction.guild)
     await safe_interaction_send(interaction, content="✅ Panele zostały odświeżone.", ephemeral=True)
 
-
 @bot.tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
     try:
@@ -1802,7 +1547,6 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
     except discord.InteractionResponded:
         await interaction.followup.send(f"❌ Błąd komendy: {error}", ephemeral=True)
 
-
 # =========================================================
 # START
 # =========================================================
@@ -1812,10 +1556,8 @@ def main() -> None:
     init_db()
     bot.run(TOKEN)
 
-
 if __name__ == "__main__":
     main()
-
 
 @bot.event
 async def on_member_remove(member: discord.Member):
