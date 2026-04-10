@@ -1,6 +1,7 @@
 import os
 import random
 import time
+import re
 import unicodedata
 from datetime import datetime, timezone
 from typing import Optional
@@ -42,22 +43,121 @@ AUTOMOD_EXCLUDED_CHANNEL_IDS = {
 AUTOMOD_CHANNEL_NAME_KEYWORDS = {
     "chat", "czat", "general", "glowny", "główny", "ogolny", "ogólny", "lobby"
 }
-AUTOMOD_BANNED_WORDS = {
-    "kurwa", "kurwo", "kurwy", "kurwie", "wkurw", "wypierdalaj", "wypierdalac",
-    "pierdol", "pierdole", "pierdolic", "pojeb", "pojebie", "pojebany", "pojebana",
-    "chuj", "chuju", "chuja", "chujem", "cipa", "cipe", "cipy",
-    "debil", "idiota", "imbecyl", "zjeb", "zjeba", "zjebie", "szmata",
-    "dziwka", "suka", "skurw", "skurwysyn", "skurwysynie"
-}
-AUTOMOD_THREAT_PHRASES = {
-    "zabije cie", "dojade cie", "rozjebie cie", "spale ci dom",
-    "polamie cie", "wpierdole ci", "zniszcze cie", "zatluke cie", "pobije cie",
-    "znajde cie", "dorwe cie", "masz przejebane"
-}
-AUTOMOD_INSULT_PHRASES = {
-    "jestes nikim", "jebany pies", "ty smieciu", "ty smiec", "ty kurwo",
-    "ty chuju", "ty debilu", "ty idioto", "ty zjebie", "twoja stara"
-}
+AUTOMOD_BAD_PATTERNS = [
+    r"\bkurw[a-ząćęłńóśźż]*\b",
+    r"\bkurw[oaeuyąę]*\b",
+    r"\bskurw[a-ząćęłńóśźż]*\b",
+    r"\bskurwysyn[a-ząćęłńóśźż]*\b",
+
+    r"\bjeb[a-ząćęłńóśźż]*\b",
+    r"\bjeba[cć]\b",
+    r"\bjebac\b",
+    r"\bjeba[cć][a-ząćęłńóśźż]*\b",
+    r"\bjebie[a-ząćęłńóśźż]*\b",
+    r"\bjeban[a-ząćęłńóśźż]*\b",
+    r"\bjebnięt[a-ząćęłńóśźż]*\b",
+    r"\bdojeb[a-ząćęłńóśźż]*\b",
+    r"\bodjeb[a-ząćęłńóśźż]*\b",
+    r"\bprzejeb[a-ząćęłńóśźż]*\b",
+    r"\bwyjeb[a-ząćęłńóśźż]*\b",
+    r"\bpojeb[a-ząćęłńóśźż]*\b",
+
+    r"\bpierdol[a-ząćęłńóśźż]*\b",
+    r"\bpierdole[a-ząćęłńóśźż]*\b",
+    r"\bpierdoli[a-ząćęłńóśźż]*\b",
+    r"\bpierdolic\b",
+    r"\bpierdoli[cć]\b",
+    r"\bspierdal[a-ząćęłńóśźż]*\b",
+    r"\bwypierdal[a-ząćęłńóśźż]*\b",
+    r"\bnapierdal[a-ząćęłńóśźż]*\b",
+    r"\bopierdal[a-ząćęłńóśźż]*\b",
+    r"\bwpierdol[a-ząćęłńóśźż]*\b",
+
+    r"\bchuj[a-ząćęłńóśźż]*\b",
+    r"\bchuja\b",
+    r"\bchuju\b",
+    r"\bchujem\b",
+    r"\bchujow[a-ząćęłńóśźż]*\b",
+    r"\bchujni[a-ząćęłńóśźż]*\b",
+    r"\bch[óo]j[a-ząćęłńóśźż]*\b",
+
+    r"\bcip[a-ząćęłńóśźż]*\b",
+    r"\bcipa\b",
+    r"\bcipk[a-ząćęłńóśźż]*\b",
+    r"\bcipcz[a-ząćęłńóśźż]*\b",
+
+    r"\bpizd[a-ząćęłńóśźż]*\b",
+    r"\bpizda\b",
+    r"\bpizdo\b",
+    r"\bspizg[a-ząćęłńóśźż]*\b",
+
+    r"\bsuk[a-ząćęłńóśźż]*\b",
+    r"\bsuko\b",
+    r"\bsucz[a-ząćęłńóśźż]*\b",
+
+    r"\bdziwk[a-ząćęłńóśźż]*\b",
+    r"\bkurtyzan[a-ząćęłńóśźż]*\b",
+
+    r"\bfiut[a-ząćęłńóśźż]*\b",
+    r"\bfiucie\b",
+    r"\bkutas[a-ząćęłńóśźż]*\b",
+    r"\bpa[lł]a\b",
+    r"\bpa[lł]o\b",
+
+    r"\bdebil[a-ząćęłńóśźż]*\b",
+    r"\bidiot[a-ząćęłńóśźż]*\b",
+    r"\bimbecyl[a-ząćęłńóśźż]*\b",
+    r"\bkretyn[a-ząćęłńóśźż]*\b",
+    r"\bbaran[a-ząćęłńóśźż]*\b",
+    r"\bmato[lł][a-ząćęłńóśźż]*\b",
+    r"\bprzyglup[a-ząćęłńóśźż]*\b",
+    r"\bt[eę]pak[a-ząćęłńóśźż]*\b",
+    r"\bmongol[a-ząćęłńóśźż]*\b",
+    r"\bdown[a-ząćęłńóśźż]*\b",
+
+    r"\bzjeb[a-ząćęłńóśźż]*\b",
+    r"\bzjeba\b",
+    r"\bzjebie\b",
+    r"\bobsrany\b",
+    r"\bobsran[a-ząćęłńóśźż]*\b",
+    r"\bśmie[cć][a-ząćęłńóśźż]*\b",
+    r"\bsmiec[a-ząćęłńóśźż]*\b",
+    r"\bszmata[a-ząćęłńóśźż]*\b",
+    r"\bgn[óo]j[a-ząćęłńóśźż]*\b",
+    r"\bpadlin[a-ząćęłńóśźż]*\b",
+    r"\btrupie\b",
+]
+AUTOMOD_THREAT_PATTERNS = [
+    r"\bzabij[eę]\s+ci[eę]\b",
+    r"\bzajebi[eę]\s+ci[eę]\b",
+    r"\brozjeb[ięe]\s+ci[eę]\b",
+    r"\bwpierdol[eę]\s+ci\b",
+    r"\bdojad[eę]\s+ci[eę]\b",
+    r"\bdorw[eę]\s+ci[eę]\b",
+    r"\bpo[łl]ami[eę]\s+ci[eę]\b",
+    r"\bpobij[eę]\s+ci[eę]\b",
+    r"\bspal[eę]\s+ci\b",
+    r"\bznajd[eę]\s+ci[eę]\b",
+    r"\bmasz\s+przejeban[eą]\b",
+]
+AUTOMOD_INSULT_PATTERNS = [
+    r"\bty\s+debil[uoa]?\b",
+    r"\bty\s+idiot[oau]?\b",
+    r"\bty\s+kretyni[eauo]?\b",
+    r"\bty\s+zjeb[ieuao]?\b",
+    r"\bty\s+chuju\b",
+    r"\bty\s+kurwo\b",
+    r"\bty\s+szmato\b",
+    r"\bty\s+smiec[iu]?\b",
+    r"\bjestes\s+nikim\b",
+    r"\btwoja\s+stara\b",
+
+    # obraźliwe użycia wobec orientacji - blokujemy tylko jako wyzwisko, nie neutralne słowo
+    r"\bty\s+gej[uoa]?\b",
+    r"\bjebany\s+gej\b",
+    r"\bpieprzony\s+gej\b",
+    r"\bbrudny\s+gej\b",
+]
 
 # =========================================================
 # AUTO PRYWATNE KANAŁY VC
@@ -668,13 +768,41 @@ def normalize_automod_text(text: str) -> str:
     text = text.lower()
     text = unicodedata.normalize("NFKD", text)
     text = "".join(ch for ch in text if not unicodedata.combining(ch))
+
     cleaned = []
     for ch in text:
         if ch.isalnum() or ch.isspace():
             cleaned.append(ch)
         else:
             cleaned.append(" ")
-    return " ".join("".join(cleaned).split())
+
+    text = " ".join("".join(cleaned).split())
+    return text
+
+
+def collapse_spaced_letters(text: str) -> str:
+    # skleja litery rozbijane spacjami: "j e b a c" -> "jebac"
+    tokens = text.split()
+    result = []
+    buffer = []
+
+    for token in tokens:
+        if len(token) == 1 and token.isalpha():
+            buffer.append(token)
+        else:
+            if len(buffer) >= 2:
+                result.append("".join(buffer))
+            elif buffer:
+                result.extend(buffer)
+            buffer = []
+            result.append(token)
+
+    if len(buffer) >= 2:
+        result.append("".join(buffer))
+    elif buffer:
+        result.extend(buffer)
+
+    return " ".join(result)
 
 
 def is_moderated_channel(channel: discord.abc.GuildChannel) -> bool:
@@ -685,21 +813,23 @@ def is_moderated_channel(channel: discord.abc.GuildChannel) -> bool:
     return any(keyword in name for keyword in AUTOMOD_CHANNEL_NAME_KEYWORDS)
 
 
-def detect_automod_violation(content: str) -> str | None:
+def detect_automod_violation(content: str):
     normalized = normalize_automod_text(content)
-    words = set(normalized.split())
+    collapsed = collapse_spaced_letters(normalized)
+    variants = [normalized, collapsed]
 
-    for banned in AUTOMOD_BANNED_WORDS:
-        if banned in words or banned in normalized:
-            return "wulgaryzmy / obrażanie"
+    for text_variant in variants:
+        for pattern in AUTOMOD_BAD_PATTERNS:
+            if re.search(pattern, text_variant, flags=re.IGNORECASE):
+                return "przekleństwa / wyzwiska"
 
-    for phrase in AUTOMOD_THREAT_PHRASES:
-        if phrase in normalized:
-            return "groźby"
+        for pattern in AUTOMOD_THREAT_PATTERNS:
+            if re.search(pattern, text_variant, flags=re.IGNORECASE):
+                return "groźby"
 
-    for phrase in AUTOMOD_INSULT_PHRASES:
-        if phrase in normalized:
-            return "obrażanie"
+        for pattern in AUTOMOD_INSULT_PATTERNS:
+            if re.search(pattern, text_variant, flags=re.IGNORECASE):
+                return "obrażanie"
 
     return None
 
