@@ -1400,8 +1400,38 @@ class ShopView(discord.ui.View):
 async def on_message(message: discord.Message):
     if message.author.bot or message.guild is None:
         return
+
     if not message.content or not message.content.strip():
         return
+
+    if AUTOMOD_ENABLED and isinstance(message.channel, discord.TextChannel):
+        if is_moderated_channel(message.channel):
+            violation = detect_automod_violation(message.content)
+            if violation is not None:
+                try:
+                    await message.delete()
+                except discord.HTTPException:
+                    pass
+
+                if AUTOMOD_DELETE_AND_WARN:
+                    try:
+                        warning = await message.channel.send(
+                            f"⚠️ {message.author.mention}, Twoja wiadomość została usunięta za: **{violation}**."
+                        )
+                        await warning.delete(delay=AUTOMOD_WARNING_DELETE_AFTER)
+                    except discord.HTTPException:
+                        pass
+
+                try:
+                    embed = discord.Embed(title="🛡️ AutoMod usunął wiadomość", color=discord.Color.red())
+                    embed.add_field(name="Użytkownik", value=f"{message.author.mention} ({message.author.id})", inline=False)
+                    embed.add_field(name="Kanał", value=message.channel.mention, inline=False)
+                    embed.add_field(name="Powód", value=violation, inline=False)
+                    embed.add_field(name="Treść", value=(message.content[:1000] if message.content else "brak"), inline=False)
+                    await send_admin_log(message.guild, embed)
+                except Exception:
+                    pass
+                return
 
     count = update_message_count(message.guild.id, message.author.id)
 
@@ -1409,6 +1439,9 @@ async def on_message(message: discord.Message):
         member = message.guild.get_member(message.author.id)
         if member:
             add_points_with_role_bonus(member, text_points=TEXT_POINTS)
+
+    await bot.process_commands(message)
+
 
 @bot.event
 async def on_member_join(member: discord.Member):
