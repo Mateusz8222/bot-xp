@@ -732,6 +732,10 @@ def get_reward_role_name(role_id: int) -> str:
     }
     return mapping.get(role_id, f"Rola {role_id}")
 
+def is_real_user(obj) -> bool:
+    return not getattr(obj, "bot", False)
+
+
 
 def sanitize_private_channel_name(name: str) -> str:
     safe = name.lower().strip()
@@ -1355,6 +1359,9 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
 
 @bot.event
 async def on_member_join(member: discord.Member):
+    if not is_real_user(member):
+        return
+
     embed = discord.Embed(title="📥 Użytkownik dołączył", color=discord.Color.green())
     embed.add_field(name="Użytkownik", value=f"{member.mention} ({member.id})", inline=False)
     embed.add_field(name="Konto utworzone", value=f"<t:{int(member.created_at.timestamp())}:F>", inline=False)
@@ -1363,6 +1370,9 @@ async def on_member_join(member: discord.Member):
 
 @bot.event
 async def on_member_remove(member: discord.Member):
+    if not is_real_user(member):
+        return
+
     moderator, reason = await get_recent_audit_actor_and_reason(member.guild, discord.AuditLogAction.kick, member.id)
     embed = discord.Embed(title="📤 Użytkownik opuścił serwer / został usunięty", color=discord.Color.red())
     embed.add_field(name="Użytkownik", value=f"{member} ({member.id})", inline=False)
@@ -1376,6 +1386,9 @@ async def on_member_remove(member: discord.Member):
 
 @bot.event
 async def on_member_ban(guild: discord.Guild, user: discord.User):
+    if not is_real_user(user):
+        return
+
     moderator, reason = await get_recent_audit_actor_and_reason(guild, discord.AuditLogAction.ban, user.id)
     embed = discord.Embed(title="🔨 Ban", color=discord.Color.dark_red())
     embed.add_field(name="Użytkownik", value=f"{user} ({user.id})", inline=False)
@@ -1387,6 +1400,9 @@ async def on_member_ban(guild: discord.Guild, user: discord.User):
 
 @bot.event
 async def on_member_unban(guild: discord.Guild, user: discord.User):
+    if not is_real_user(user):
+        return
+
     moderator, reason = await get_recent_audit_actor_and_reason(guild, discord.AuditLogAction.unban, user.id)
     embed = discord.Embed(title="🔓 Unban", color=discord.Color.green())
     embed.add_field(name="Użytkownik", value=f"{user} ({user.id})", inline=False)
