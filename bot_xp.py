@@ -1,6 +1,7 @@
 import os
 import random
 import time
+import unicodedata
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -26,6 +27,37 @@ LEGEND_TEXT_CHANNEL_ID = 1490791025671803013 # 💎・legenda-czat
 LEGEND_VC_CHANNEL_ID = 1490792255504646407   # 💎・Legenda VC
 SHOP_LOG_CHANNEL_ID = 1491934996745683035      # 📜・logi-pod-sklep
 ADMIN_LOG_CHANNEL_ID = 1491944667124596836     # 📜・logi-administracyjne
+
+AUTOMOD_ENABLED = True
+AUTOMOD_DELETE_AND_WARN = True
+AUTOMOD_WARNING_DELETE_AFTER = 8
+AUTOMOD_EXCLUDED_CHANNEL_IDS = {
+    POINTS_CHANNEL_ID,
+    RANKING_CHANNEL_ID,
+    XPINFO_CHANNEL_ID,
+    SHOP_CHANNEL_ID,
+    SHOP_LOG_CHANNEL_ID,
+    ADMIN_LOG_CHANNEL_ID,
+}
+AUTOMOD_CHANNEL_NAME_KEYWORDS = {
+    "chat", "czat", "general", "glowny", "główny", "ogolny", "ogólny", "lobby"
+}
+AUTOMOD_BANNED_WORDS = {
+    "kurwa", "kurwo", "kurwy", "kurwie", "wkurw", "wypierdalaj", "wypierdalac",
+    "pierdol", "pierdole", "pierdolic", "pojeb", "pojebie", "pojebany", "pojebana",
+    "chuj", "chuju", "chuja", "chujem", "cipa", "cipe", "cipy",
+    "debil", "idiota", "imbecyl", "zjeb", "zjeba", "zjebie", "szmata",
+    "dziwka", "suka", "skurw", "skurwysyn", "skurwysynie"
+}
+AUTOMOD_THREAT_PHRASES = {
+    "zabije cie", "dojade cie", "rozjebie cie", "spale ci dom",
+    "polamie cie", "wpierdole ci", "zniszcze cie", "zatluke cie", "pobije cie",
+    "znajde cie", "dorwe cie", "masz przejebane"
+}
+AUTOMOD_INSULT_PHRASES = {
+    "jestes nikim", "jebany pies", "ty smieciu", "ty smiec", "ty kurwo",
+    "ty chuju", "ty debilu", "ty idioto", "ty zjebie", "twoja stara"
+}
 
 # =========================================================
 # AUTO PRYWATNE KANAŁY VC
@@ -631,6 +663,47 @@ async def get_recent_audit_actor_and_reason(
     except Exception:
         return None, None
     return None, None
+
+def normalize_automod_text(text: str) -> str:
+    text = text.lower()
+    text = unicodedata.normalize("NFKD", text)
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    cleaned = []
+    for ch in text:
+        if ch.isalnum() or ch.isspace():
+            cleaned.append(ch)
+        else:
+            cleaned.append(" ")
+    return " ".join("".join(cleaned).split())
+
+
+def is_moderated_channel(channel: discord.abc.GuildChannel) -> bool:
+    if getattr(channel, "id", None) in AUTOMOD_EXCLUDED_CHANNEL_IDS:
+        return False
+
+    name = normalize_automod_text(getattr(channel, "name", ""))
+    return any(keyword in name for keyword in AUTOMOD_CHANNEL_NAME_KEYWORDS)
+
+
+def detect_automod_violation(content: str) -> str | None:
+    normalized = normalize_automod_text(content)
+    words = set(normalized.split())
+
+    for banned in AUTOMOD_BANNED_WORDS:
+        if banned in words or banned in normalized:
+            return "wulgaryzmy / obrażanie"
+
+    for phrase in AUTOMOD_THREAT_PHRASES:
+        if phrase in normalized:
+            return "groźby"
+
+    for phrase in AUTOMOD_INSULT_PHRASES:
+        if phrase in normalized:
+            return "obrażanie"
+
+    return None
+
+
 
 # =========================================================
 # BOT
