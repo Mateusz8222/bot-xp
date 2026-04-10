@@ -1455,10 +1455,28 @@ async def on_guild_channel_delete(channel: discord.abc.GuildChannel):
 async def on_guild_channel_update(before: discord.abc.GuildChannel, after: discord.abc.GuildChannel):
     if before.name == after.name:
         return
+
+    moderator, reason = await get_recent_audit_actor_and_reason(
+        after.guild,
+        discord.AuditLogAction.channel_update,
+        after.id
+    )
+
+    if moderator and moderator.bot:
+        return
+
     embed = discord.Embed(title="🛠️ Zmieniono kanał", color=discord.Color.blurple())
-    embed.add_field(name="Kanał", value=f"{before.id}", inline=False)
+    embed.add_field(name="Kanał", value=f"<#{after.id}>", inline=False)
+
+    if moderator:
+        embed.add_field(name="Kto zmienił", value=moderator.mention, inline=False)
+
     embed.add_field(name="Stara nazwa", value=before.name, inline=True)
     embed.add_field(name="Nowa nazwa", value=after.name, inline=True)
+
+    if reason:
+        embed.add_field(name="Powód", value=reason, inline=False)
+
     await send_admin_log(after.guild, embed)
 
 
