@@ -1,7 +1,7 @@
 import os
 import random
 import time
-from datetime import datetime, UTC
+from datetime import datetime, timezone
 from typing import Optional
 
 import discord
@@ -611,7 +611,7 @@ async def get_recent_audit_actor_and_reason(
             if entry.target and getattr(entry.target, "id", None) == target_id:
                 created = entry.created_at
                 if created is not None:
-                    age = (datetime.now(UTC) - created).total_seconds()
+                    age = (datetime.now(timezone.utc) - created).total_seconds()
                     if age <= seconds_back:
                         return entry.user, entry.reason
     except Exception:
