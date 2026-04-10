@@ -52,9 +52,8 @@ AURA_ROLE_ID = 1491917610281861231  # 🌌 AURA
 TEXT_MESSAGES_REQUIRED = 10
 TEXT_POINTS = 2
 
-VC_INTERVAL_SECONDS = 600  # 10 minut
-VC_POINTS_SOLO = 5
-VC_POINTS_WITH_ACTIVE = 10
+VC_INTERVAL_SECONDS = 30  # 30 sekund
+VC_POINTS_SOLO = 1
 
 VIP_MULTIPLIER = 1.20
 LEGEND_MULTIPLIER = 1.40
@@ -848,7 +847,7 @@ def xpinfo_embed() -> discord.Embed:
     embed.add_field(name="💬 Wiadomości", value="2 punkty za każde 10 wiadomości", inline=False)
     embed.add_field(
         name="🎤 VC",
-        value="5 punktów za 10 minut solo\n10 punktów za 10 minut z aktywną osobą",
+        value="1 punkt za 30 sekund solo\n2+ osoby: punkty co 30 sekund = liczba aktywnych osób na kanale",
         inline=False,
     )
     embed.add_field(name="⭐ Bonusy rang", value="VIP: +20%\nLEGENDA: +40%", inline=False)
@@ -1572,7 +1571,7 @@ async def on_ready():
 # =========================================================
 # VC LOOP
 # =========================================================
-@tasks.loop(seconds=60)
+@tasks.loop(seconds=10)
 async def vc_loop():
     now = time.time()
 
@@ -1593,11 +1592,14 @@ async def vc_loop():
 
         full_intervals = int(elapsed // VC_INTERVAL_SECONDS)
         channel = member.voice.channel
-
         active_count = count_active_members_in_channel(channel)
-        base_points = VC_POINTS_WITH_ACTIVE if active_count >= 2 else VC_POINTS_SOLO
 
-        add_points_with_role_bonus(member, voice_points=full_intervals * base_points)
+        if active_count <= 1:
+            points_per_interval = VC_POINTS_SOLO
+        else:
+            points_per_interval = active_count
+
+        add_points_with_role_bonus(member, voice_points=full_intervals * points_per_interval)
         bot.vc_active_since[(guild_id, user_id)] = started_at + (full_intervals * VC_INTERVAL_SECONDS)
 
 
