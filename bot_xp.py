@@ -2126,3 +2126,19 @@ async def on_member_remove(member: discord.Member):
         embed.add_field(name="Powód", value=reason, inline=False)
 
     await send_admin_log(guild, embed)
+
+
+# ===== ULTRA HARDCORE FILTER =====
+EXTRA_BAD_WORDS = [
+    "stary","twoj stary","twojka stara",
+    "kongo","kng",
+    "popierdolony","popierdolona",
+    "zboczeniec","zboczony"
+]
+
+def contains_bad_link(content: str) -> bool:
+    content = content.lower()
+    suspicious = ["porn","sex","xvideos","xnxx","redtube","onlyfans","pornhub","18+"]
+    if "http" in content or "www" in content:
+        return any(s in content for s in suspicious)
+    return False
