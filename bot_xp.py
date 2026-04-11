@@ -40,6 +40,32 @@ AUTOMOD_WARN_TIMEOUTS = {
 AUTOMOD_WARN_DECAY_HOURS = 24
 AUTOMOD_WARN_KICK_AT = 10
 AUTOMOD_WARN_BAN_AT = 20
+AUTOMOD_BAN_DISCORD_INVITES = True
+AUTOMOD_BLOCK_EXTERNAL_LINKS = True
+AUTOMOD_SHORTENER_WARN = True
+
+AUTOMOD_BLOCKED_LINK_KEYWORDS = {
+    "tiktok.com",
+    "vt.tiktok.com",
+    "vm.tiktok.com",
+    "youtube.com",
+    "youtu.be",
+    "kick.com",
+}
+
+AUTOMOD_SHORTENER_KEYWORDS = {
+    "bit.ly",
+    "tinyurl.com",
+    "t.co",
+    "cutt.ly",
+    "shorturl.at",
+    "goo.gl",
+    "rb.gy",
+    "rebrand.ly",
+    "ow.ly",
+    "is.gd",
+    "buff.ly",
+}
 AUTOMOD_EXCLUDED_CHANNEL_IDS = {
     POINTS_CHANNEL_ID,
     RANKING_CHANNEL_ID,
@@ -1032,6 +1058,28 @@ def detect_automod_violation(content: str):
     return None
 
 
+def contains_discord_invite(content: str) -> bool:
+    text = content.lower()
+    return (
+        "discord.gg/" in text
+        or "discord.com/invite/" in text
+        or "discordapp.com/invite/" in text
+    )
+
+
+def contains_blocked_external_link(content: str) -> bool:
+    text = content.lower()
+    if "http://" not in text and "https://" not in text and "www." not in text:
+        return False
+    return any(keyword in text for keyword in AUTOMOD_BLOCKED_LINK_KEYWORDS)
+
+
+def contains_shortened_link(content: str) -> bool:
+    text = content.lower()
+    if "http://" not in text and "https://" not in text and "www." not in text:
+        return False
+    return any(keyword in text for keyword in AUTOMOD_SHORTENER_KEYWORDS)
+
 
 # =========================================================
 # BOT
@@ -1264,6 +1312,7 @@ def xpinfo_embed() -> discord.Embed:
     embed.add_field(name="⚡ Booster XP", value="+25% XP przez 1 godzinę po zakupie.", inline=False)
     embed.add_field(name="🌌 AURA", value="Prestiżowa rola wizualna do kupienia w sklepie.", inline=False)
     embed.add_field(name="🛡️ System kar", value=f"AutoMod daje warny. 1 = ostrzeżenie, 10 = kick, 20 = ban. Co {AUTOMOD_WARN_DECAY_HOURS}h bez przewinień schodzi 1 warn.", inline=False)
+    embed.add_field(name="🔗 Linki", value="Discord invite = natychmiastowy ban. TikTok / YouTube / Kick / skrócone linki = usunięcie + warn.", inline=False)
     embed.add_field(name="❌ Punkty VC nie lecą gdy", value="bot / mute / deaf / kanał AFK", inline=False)
     return embed
 
@@ -1735,6 +1784,99 @@ async def on_message(message: discord.Message):
 
     if AUTOMOD_ENABLED and isinstance(message.channel, discord.TextChannel):
         if is_moderated_channel(message.channel):
+            member = message.guild.get_member(message.author.id)
+
+            # BAN za zaproszenia do innych Discordów
+            if AUTOMOD_BAN_DISCORD_INVITES and contains_discord_invite(message.content):
+                try:
+                    await message.delete()
+                except discord.HTTPException:
+                    pass
+
+                if member is not None:
+                    try:
+                        await member.ban(reason="AutoMod: reklama innego Discorda", delete_message_days=0)
+                        delete_user_data(message.guild.id, member.id)
+                    except Exception:
+                        pass
+                return
+
+            # Blokada TikTok / YouTube / Kick
+            if AUTOMOD_BLOCK_EXTERNAL_LINKS and contains_blocked_external_link(message.content):
+                try:
+                    await message.delete()
+                except discord.HTTPException:
+                    pass
+
+                warn_count = add_automod_warning(message.guild.id, message.author.id, "reklama / link zewnętrzny")
+                action_text = ""
+                member = message.guild.get_member(message.author.id)
+
+                if member is not None and warn_count >= AUTOMOD_WARN_BAN_AT:
+                    try:
+                        await member.ban(reason=f"AutoMod hardcore: reklama / link zewnętrzny | warn #{warn_count}", delete_message_days=0)
+                        delete_user_data(message.guild.id, member.id)
+                        action_text = " Osiągnięto limit warnów — użytkownik został **zbanowany**."
+                    except Exception:
+                        action_text = ""
+                elif member is not None and warn_count >= AUTOMOD_WARN_KICK_AT:
+                    try:
+                        await member.kick(reason=f"AutoMod hardcore: reklama / link zewnętrzny | warn #{warn_count}")
+                        delete_user_data(message.guild.id, member.id)
+                        action_text = " Osiągnięto limit warnów — użytkownik został **wyrzucony z serwera**."
+                    except Exception:
+                        action_text = ""
+                elif warn_count == 1:
+                    action_text = " Zachowuj się bo wylecisz."
+
+                if AUTOMOD_DELETE_AND_WARN:
+                    try:
+                        warning = await message.channel.send(
+                            f"⚠️ {message.author.mention}, link został usunięty. Masz teraz **{warn_count} warnów**.{action_text}"
+                        )
+                        await warning.delete(delay=AUTOMOD_WARNING_DELETE_AFTER)
+                    except discord.HTTPException:
+                        pass
+                return
+
+            # Blokada skrótów linków
+            if AUTOMOD_SHORTENER_WARN and contains_shortened_link(message.content):
+                try:
+                    await message.delete()
+                except discord.HTTPException:
+                    pass
+
+                warn_count = add_automod_warning(message.guild.id, message.author.id, "skrócony link")
+                action_text = ""
+                member = message.guild.get_member(message.author.id)
+
+                if member is not None and warn_count >= AUTOMOD_WARN_BAN_AT:
+                    try:
+                        await member.ban(reason=f"AutoMod hardcore: skrócony link | warn #{warn_count}", delete_message_days=0)
+                        delete_user_data(message.guild.id, member.id)
+                        action_text = " Osiągnięto limit warnów — użytkownik został **zbanowany**."
+                    except Exception:
+                        action_text = ""
+                elif member is not None and warn_count >= AUTOMOD_WARN_KICK_AT:
+                    try:
+                        await member.kick(reason=f"AutoMod hardcore: skrócony link | warn #{warn_count}")
+                        delete_user_data(message.guild.id, member.id)
+                        action_text = " Osiągnięto limit warnów — użytkownik został **wyrzucony z serwera**."
+                    except Exception:
+                        action_text = ""
+                elif warn_count == 1:
+                    action_text = " Zachowuj się bo wylecisz."
+
+                if AUTOMOD_DELETE_AND_WARN:
+                    try:
+                        warning = await message.channel.send(
+                            f"⚠️ {message.author.mention}, skrócony link został usunięty. Masz teraz **{warn_count} warnów**.{action_text}"
+                        )
+                        await warning.delete(delay=AUTOMOD_WARNING_DELETE_AFTER)
+                    except discord.HTTPException:
+                        pass
+                return
+
             violation = detect_automod_violation(message.content)
             if violation is not None:
                 try:
@@ -2056,6 +2198,7 @@ async def warny(interaction: discord.Interaction):
     embed = discord.Embed(title="🛡️ Twoje warny", color=discord.Color.orange())
     embed.add_field(name="Liczba warnów", value=str(count), inline=False)
     embed.add_field(name="Kary", value="1 warn = ostrzeżenie\n10 warnów = kick\n20 warnów = ban", inline=False)
+    embed.add_field(name="Linki", value="Discord invite = ban\nTikTok / YouTube / Kick / skrócone linki = warn", inline=False)
     embed.add_field(name="Zmniejszanie warnów", value=f"Co {AUTOMOD_WARN_DECAY_HOURS}h bez przewinień schodzi 1 warn.", inline=False)
     await safe_interaction_send(interaction, embed=embed, ephemeral=True)
 
