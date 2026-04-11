@@ -3,7 +3,7 @@ import random
 import time
 import re
 import unicodedata
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 import discord
@@ -32,6 +32,11 @@ ADMIN_LOG_CHANNEL_ID = 1491944667124596836     # 📜・logi-administracyjne
 AUTOMOD_ENABLED = True
 AUTOMOD_DELETE_AND_WARN = True
 AUTOMOD_WARNING_DELETE_AFTER = 8
+AUTOMOD_WARN_TIMEOUTS = {
+    3: 10,
+    5: 60,
+    7: 1440,
+}
 AUTOMOD_EXCLUDED_CHANNEL_IDS = {
     POINTS_CHANNEL_ID,
     RANKING_CHANNEL_ID,
@@ -400,6 +405,26 @@ def init_db() -> None:
                 crate_key TEXT NOT NULL,
                 next_open_at BIGINT NOT NULL,
                 PRIMARY KEY (guild_id, user_id, crate_key)
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS automod_warnings (
+                guild_id BIGINT NOT NULL,
+                user_id BIGINT NOT NULL,
+                warning_count INTEGER NOT NULL DEFAULT 0,
+                last_reason TEXT,
+                updated_at BIGINT NOT NULL,
+                PRIMARY KEY (guild_id, user_id)
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS automod_warnings (
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                warning_count INTEGER NOT NULL DEFAULT 0,
+                last_reason TEXT,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY (guild_id, user_id)
             )
         """)
         cur.execute("""
@@ -1092,6 +1117,7 @@ def xpinfo_embed() -> discord.Embed:
     embed.add_field(name="📦 Skrzynki", value="Mogą wypaść punkty, role, medale albo pusta skrzynka.", inline=False)
     embed.add_field(name="⚡ Booster XP", value="+25% XP przez 1 godzinę po zakupie.", inline=False)
     embed.add_field(name="🌌 AURA", value="Prestiżowa rola wizualna do kupienia w sklepie.", inline=False)
+    embed.add_field(name="🛡️ System kar", value="AutoMod daje warny. 3 = 10 min timeout, 5 = 1h, 7 = 24h.", inline=False)
     embed.add_field(name="❌ Punkty VC nie lecą gdy", value="bot / mute / deaf / kanał AFK", inline=False)
     return embed
 
@@ -1570,10 +1596,24 @@ async def on_message(message: discord.Message):
                 except discord.HTTPException:
                     pass
 
+                warn_count = add_automod_warning(message.guild.id, message.author.id, violation)
+                timeout_minutes = AUTOMOD_WARN_TIMEOUTS.get(warn_count)
+
+                timeout_text = ""
+                member = message.guild.get_member(message.author.id)
+
+                if timeout_minutes and member is not None:
+                    try:
+                        until = datetime.now(timezone.utc) + timedelta(minutes=timeout_minutes)
+                        await member.timeout(until, reason=f"AutoMod: {violation} | warn #{warn_count}")
+                        timeout_text = f" Otrzymujesz też timeout na **{timeout_minutes} minut**."
+                    except Exception:
+                        timeout_text = ""
+
                 if AUTOMOD_DELETE_AND_WARN:
                     try:
                         warning = await message.channel.send(
-                            f"⚠️ {message.author.mention}, Twoja wiadomość została usunięta za: **{violation}**."
+                            f"⚠️ {message.author.mention}, wiadomość usunięta za: **{violation}**. Masz teraz **{warn_count} warnów**.{timeout_text}"
                         )
                         await warning.delete(delay=AUTOMOD_WARNING_DELETE_AFTER)
                     except discord.HTTPException:
@@ -1851,6 +1891,31 @@ async def skrzynki_historia(interaction: discord.Interaction):
 
     history = get_last_crate_history(interaction.guild.id, interaction.user.id, 5)
     await safe_interaction_send(interaction, embed=crate_history_embed(interaction.user, history), ephemeral=True)
+
+@bot.tree.command(name="warny", description="Pokazuje liczbę warnów użytkownika")
+async def warny(interaction: discord.Interaction):
+    if interaction.guild is None:
+        await safe_interaction_send(interaction, content="Ta komenda działa tylko na serwerze.", ephemeral=True)
+        return
+
+    count = get_automod_warning_count(interaction.guild.id, interaction.user.id)
+    embed = discord.Embed(title="🛡️ Twoje warny", color=discord.Color.orange())
+    embed.add_field(name="Liczba warnów", value=str(count), inline=False)
+    embed.add_field(name="Kary", value="3 warny = 10 min timeout\n5 warnów = 1h timeout\n7 warnów = 24h timeout", inline=False)
+    await safe_interaction_send(interaction, embed=embed, ephemeral=True)
+
+
+@bot.tree.command(name="reset_warnow", description="Resetuje warny użytkownika")
+@app_commands.checks.has_permissions(manage_messages=True)
+@app_commands.describe(uzytkownik="Użytkownik do resetu warnów")
+async def reset_warnow(interaction: discord.Interaction, uzytkownik: discord.Member):
+    if interaction.guild is None:
+        await safe_interaction_send(interaction, content="Ta komenda działa tylko na serwerze.", ephemeral=True)
+        return
+
+    clear_automod_warnings(interaction.guild.id, uzytkownik.id)
+    await safe_interaction_send(interaction, content=f"✅ Zresetowano warny użytkownika {uzytkownik.mention}.", ephemeral=True)
+
 
 @bot.tree.command(name="odswiez_panele", description="Odświeża wszystkie panele bota")
 @app_commands.checks.has_permissions(manage_guild=True)
