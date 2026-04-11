@@ -72,6 +72,8 @@ AUTOMOD_BAD_PATTERNS = [
     r"\bnapierdal[a-ząćęłńóśźż]*\b",
     r"\bopierdal[a-ząćęłńóśźż]*\b",
     r"\bwpierdol[a-ząćęłńóśźż]*\b",
+    r"\brozpierdol[a-ząćęłńóśźż]*\b",
+    r"\brozpierdoli[mnwyćcsząężźłó]*\b",
 
     r"\bchuj[a-ząćęłńóśźż]*\b",
     r"\bchuja\b",
@@ -80,6 +82,7 @@ AUTOMOD_BAD_PATTERNS = [
     r"\bchujow[a-ząćęłńóśźż]*\b",
     r"\bchujni[a-ząćęłńóśźż]*\b",
     r"\bch[óo]j[a-ząćęłńóśźż]*\b",
+    r"\bchuje\b",
 
     r"\bcip[a-ząćęłńóśźż]*\b",
     r"\bcipa\b",
@@ -96,11 +99,14 @@ AUTOMOD_BAD_PATTERNS = [
     r"\bsucz[a-ząćęłńóśźż]*\b",
 
     r"\bdziwk[a-ząćęłńóśźż]*\b",
+    r"\bdziwki\b",
     r"\bkurtyzan[a-ząćęłńóśźż]*\b",
 
     r"\bfiut[a-ząćęłńóśźż]*\b",
     r"\bfiucie\b",
     r"\bkutas[a-ząćęłńóśźż]*\b",
+    r"\bcwel[a-ząćęłńóśźż]*\b",
+    r"\bcwele\b",
     r"\bpa[lł]a\b",
     r"\bpa[lł]o\b",
 
@@ -118,11 +124,13 @@ AUTOMOD_BAD_PATTERNS = [
     r"\bzjeb[a-ząćęłńóśźż]*\b",
     r"\bzjeba\b",
     r"\bzjebie\b",
+    r"\bzjeby\b",
     r"\bobsrany\b",
     r"\bobsran[a-ząćęłńóśźż]*\b",
     r"\bśmie[cć][a-ząćęłńóśźż]*\b",
     r"\bsmiec[a-ząćęłńóśźż]*\b",
     r"\bszmata[a-ząćęłńóśźż]*\b",
+    r"\bszmaty\b",
     r"\bgn[óo]j[a-ząćęłńóśźż]*\b",
     r"\bpadlin[a-ząćęłńóśźż]*\b",
     r"\btrupie\b",
@@ -139,6 +147,9 @@ AUTOMOD_THREAT_PATTERNS = [
     r"\bspal[eę]\s+ci\b",
     r"\bznajd[eę]\s+ci[eę]\b",
     r"\bmasz\s+przejeban[eą]\b",
+    r"\brozpierdolimy\b",
+    r"\brozjebiemy\b",
+    r"\bdojedziemy\b",
 ]
 AUTOMOD_INSULT_PATTERNS = [
     r"\bty\s+debil[uoa]?\b",
@@ -157,6 +168,19 @@ AUTOMOD_INSULT_PATTERNS = [
     r"\bjebany\s+gej\b",
     r"\bpieprzony\s+gej\b",
     r"\bbrudny\s+gej\b",
+
+    # obrażanie rodziców i rodziny
+    r"\bjebac\s+twoja\s+matke\b",
+    r"\bjebac\s+twoja\s+stara\b",
+    r"\bkurwa\s+twoja\s+matka\b",
+    r"\btwoja\s+matka\s+to\b",
+    r"\btwoj\s+stary\s+to\b",
+    r"\bjebac\s+twojego\s+starego\b",
+    r"\bpojebana\s+rodzina\b",
+    r"\bjebana\s+rodzina\b",
+    r"\btwoja\s+rodzina\s+to\b",
+    r"\bmatke\s+ci\s+jebac\b",
+    r"\bstara\s+kurwa\b",
 ]
 
 # =========================================================
@@ -816,7 +840,8 @@ def is_moderated_channel(channel: discord.abc.GuildChannel) -> bool:
 def detect_automod_violation(content: str):
     normalized = normalize_automod_text(content)
     collapsed = collapse_spaced_letters(normalized)
-    variants = [normalized, collapsed]
+    compact = collapsed.replace(" ", "")
+    variants = [normalized, collapsed, compact]
 
     for text_variant in variants:
         for pattern in AUTOMOD_BAD_PATTERNS:
@@ -829,6 +854,8 @@ def detect_automod_violation(content: str):
 
         for pattern in AUTOMOD_INSULT_PATTERNS:
             if re.search(pattern, text_variant, flags=re.IGNORECASE):
+                if any(x in text_variant for x in ["matk", "stara", "stary", "rodzin"]):
+                    return "obrażanie rodziców / rodziny"
                 return "obrażanie"
 
     return None
@@ -1552,15 +1579,6 @@ async def on_message(message: discord.Message):
                     except discord.HTTPException:
                         pass
 
-                try:
-                    embed = discord.Embed(title="🛡️ AutoMod usunął wiadomość", color=discord.Color.red())
-                    embed.add_field(name="Użytkownik", value=f"{message.author.mention} ({message.author.id})", inline=False)
-                    embed.add_field(name="Kanał", value=message.channel.mention, inline=False)
-                    embed.add_field(name="Powód", value=violation, inline=False)
-                    embed.add_field(name="Treść", value=(message.content[:1000] if message.content else "brak"), inline=False)
-                    await send_admin_log(message.guild, embed)
-                except Exception:
-                    pass
                 return
 
     count = update_message_count(message.guild.id, message.author.id)
