@@ -30,7 +30,6 @@ SHOP_LOG_CHANNEL_ID = 1491934996745683035      # 📜・logi-pod-sklep
 ADMIN_LOG_CHANNEL_ID = 1491944667124596836     # 📜・logi-administracyjne
 
 AUTOMOD_ENABLED = True
-CHAT_MODERATION_ENABLED = True
 AUTOMOD_DELETE_AND_WARN = True
 AUTOMOD_WARNING_DELETE_AFTER = 8
 AUTOMOD_WARN_TIMEOUTS = {
@@ -67,6 +66,10 @@ AUTOMOD_SHORTENER_KEYWORDS = {
     "is.gd",
     "buff.ly",
 }
+
+BETTING_MIN_STAKE = 10
+BETTING_MAX_OPEN_MATCHES_PER_GUILD = 50
+
 AUTOMOD_EXCLUDED_CHANNEL_IDS = {
     POINTS_CHANNEL_ID,
     RANKING_CHANNEL_ID,
@@ -484,6 +487,62 @@ def init_db() -> None:
                 last_reason TEXT,
                 updated_at INTEGER NOT NULL,
                 PRIMARY KEY (guild_id, user_id)
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS betting_matches (
+                match_id BIGSERIAL PRIMARY KEY,
+                guild_id BIGINT NOT NULL,
+                home_team TEXT NOT NULL,
+                away_team TEXT NOT NULL,
+                start_ts BIGINT NOT NULL,
+                odds_home REAL NOT NULL,
+                odds_draw REAL NOT NULL,
+                odds_away REAL NOT NULL,
+                status TEXT NOT NULL DEFAULT 'open',
+                result TEXT,
+                created_by BIGINT NOT NULL,
+                created_at BIGINT NOT NULL
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS betting_bets (
+                guild_id BIGINT NOT NULL,
+                match_id BIGINT NOT NULL,
+                user_id BIGINT NOT NULL,
+                pick TEXT NOT NULL,
+                stake INTEGER NOT NULL,
+                potential_win INTEGER NOT NULL,
+                created_at BIGINT NOT NULL,
+                PRIMARY KEY (guild_id, match_id, user_id)
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS betting_matches (
+                match_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                home_team TEXT NOT NULL,
+                away_team TEXT NOT NULL,
+                start_ts INTEGER NOT NULL,
+                odds_home REAL NOT NULL,
+                odds_draw REAL NOT NULL,
+                odds_away REAL NOT NULL,
+                status TEXT NOT NULL DEFAULT 'open',
+                result TEXT,
+                created_by INTEGER NOT NULL,
+                created_at INTEGER NOT NULL
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS betting_bets (
+                guild_id INTEGER NOT NULL,
+                match_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                pick TEXT NOT NULL,
+                stake INTEGER NOT NULL,
+                potential_win INTEGER NOT NULL,
+                created_at INTEGER NOT NULL,
+                PRIMARY KEY (guild_id, match_id, user_id)
             )
         """)
         cur.execute("""
@@ -1059,15 +1118,6 @@ def detect_automod_violation(content: str):
     return None
 
 
-def is_chat_moderation_enabled() -> bool:
-    return CHAT_MODERATION_ENABLED
-
-
-def set_chat_moderation_enabled(value: bool) -> None:
-    global CHAT_MODERATION_ENABLED
-    CHAT_MODERATION_ENABLED = value
-
-
 def contains_discord_invite(content: str) -> bool:
     text = content.lower()
     return (
@@ -1089,6 +1139,268 @@ def contains_shortened_link(content: str) -> bool:
     if "http://" not in text and "https://" not in text and "www." not in text:
         return False
     return any(keyword in text for keyword in AUTOMOD_SHORTENER_KEYWORDS)
+
+
+def get_bet_odds_for_pick(match_row: dict, pick: str) -> float:
+    if pick == "1":
+        return float(match_row["odds_home"])
+    if pick.upper() == "X":
+        return float(match_row["odds_draw"])
+    if pick == "2":
+        return float(match_row["odds_away"])
+    raise ValueError("Niepoprawny typ zakładu.")
+
+
+def create_betting_match(
+    guild_id: int,
+    home_team: str,
+    away_team: str,
+    start_ts: int,
+    odds_home: float,
+    odds_draw: float,
+    odds_away: float,
+    created_by: int,
+) -> int:
+    conn = db_connect()
+    cur = conn.cursor()
+    now_ts = int(time.time())
+
+    if USING_POSTGRES:
+        cur.execute("""
+            INSERT INTO betting_matches (
+                guild_id, home_team, away_team, start_ts,
+                odds_home, odds_draw, odds_away,
+                status, result, created_by, created_at
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, 'open', NULL, %s, %s)
+            RETURNING match_id
+        """, (guild_id, home_team, away_team, int(start_ts), float(odds_home), float(odds_draw), float(odds_away), created_by, now_ts))
+        row = cur.fetchone()
+        match_id = int(row[0])
+    else:
+        cur.execute("""
+            INSERT INTO betting_matches (
+                guild_id, home_team, away_team, start_ts,
+                odds_home, odds_draw, odds_away,
+                status, result, created_by, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'open', NULL, ?, ?)
+        """, (guild_id, home_team, away_team, int(start_ts), float(odds_home), float(odds_draw), float(odds_away), created_by, now_ts))
+        match_id = int(cur.lastrowid)
+
+    conn.commit()
+    conn.close()
+    return match_id
+
+
+def get_betting_match(guild_id: int, match_id: int) -> dict | None:
+    conn = db_connect()
+    cur = conn.cursor()
+    cur.execute(sql("""
+        SELECT *
+        FROM betting_matches
+        WHERE guild_id = ? AND match_id = ?
+    """), (guild_id, match_id))
+    row = fetchone_dict(cur)
+    conn.close()
+    return row
+
+
+def list_betting_matches(guild_id: int, *, status: str | None = None, limit: int = 20) -> list[dict]:
+    conn = db_connect()
+    cur = conn.cursor()
+    if status is None:
+        cur.execute(sql("""
+            SELECT *
+            FROM betting_matches
+            WHERE guild_id = ?
+            ORDER BY status ASC, start_ts ASC
+            LIMIT ?
+        """), (guild_id, limit))
+    else:
+        cur.execute(sql("""
+            SELECT *
+            FROM betting_matches
+            WHERE guild_id = ? AND status = ?
+            ORDER BY start_ts ASC
+            LIMIT ?
+        """), (guild_id, status, limit))
+    rows = cur.fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+
+def place_bet(guild_id: int, match_id: int, user_id: int, pick: str, stake: int, potential_win: int) -> bool:
+    conn = db_connect()
+    cur = conn.cursor()
+    now_ts = int(time.time())
+
+    try:
+        if USING_POSTGRES:
+            cur.execute("""
+                INSERT INTO betting_bets (guild_id, match_id, user_id, pick, stake, potential_win, created_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (guild_id, match_id, user_id) DO NOTHING
+            """, (guild_id, match_id, user_id, pick, int(stake), int(potential_win), now_ts))
+            inserted = cur.rowcount > 0
+        else:
+            cur.execute("""
+                INSERT OR IGNORE INTO betting_bets (guild_id, match_id, user_id, pick, stake, potential_win, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (guild_id, match_id, user_id, pick, int(stake), int(potential_win), now_ts))
+            inserted = cur.rowcount > 0
+
+        conn.commit()
+        return inserted
+    finally:
+        conn.close()
+
+
+def get_user_bet(guild_id: int, match_id: int, user_id: int) -> dict | None:
+    conn = db_connect()
+    cur = conn.cursor()
+    cur.execute(sql("""
+        SELECT *
+        FROM betting_bets
+        WHERE guild_id = ? AND match_id = ? AND user_id = ?
+    """), (guild_id, match_id, user_id))
+    row = fetchone_dict(cur)
+    conn.close()
+    return row
+
+
+def list_user_bets(guild_id: int, user_id: int, limit: int = 20) -> list[dict]:
+    conn = db_connect()
+    cur = conn.cursor()
+    cur.execute(sql("""
+        SELECT b.*, m.home_team, m.away_team, m.status, m.result, m.start_ts
+        FROM betting_bets b
+        JOIN betting_matches m
+          ON b.guild_id = m.guild_id AND b.match_id = m.match_id
+        WHERE b.guild_id = ? AND b.user_id = ?
+        ORDER BY m.start_ts DESC
+        LIMIT ?
+    """), (guild_id, user_id, limit))
+    rows = cur.fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+
+def close_betting_match(guild_id: int, match_id: int) -> bool:
+    conn = db_connect()
+    cur = conn.cursor()
+    cur.execute(sql("""
+        UPDATE betting_matches
+        SET status = 'closed'
+        WHERE guild_id = ? AND match_id = ? AND status = 'open'
+    """), (guild_id, match_id))
+    changed = cur.rowcount > 0
+    conn.commit()
+    conn.close()
+    return changed
+
+
+def settle_betting_match(guild_id: int, match_id: int, result: str) -> tuple[int, int]:
+    conn = db_connect()
+    cur = conn.cursor()
+
+    cur.execute(sql("""
+        SELECT *
+        FROM betting_matches
+        WHERE guild_id = ? AND match_id = ?
+    """), (guild_id, match_id))
+    match_row = fetchone_dict(cur)
+    if not match_row:
+        conn.close()
+        raise ValueError("Nie znaleziono meczu.")
+
+    if match_row["status"] == "settled":
+        conn.close()
+        raise ValueError("Ten mecz jest już rozliczony.")
+
+    cur.execute(sql("""
+        SELECT *
+        FROM betting_bets
+        WHERE guild_id = ? AND match_id = ?
+    """), (guild_id, match_id))
+    bets = [dict(row) for row in cur.fetchall()]
+
+    winners = 0
+    total_paid = 0
+
+    for bet in bets:
+        if bet["pick"] == result:
+            add_points(guild_id, int(bet["user_id"]), int(bet["potential_win"]))
+            winners += 1
+            total_paid += int(bet["potential_win"])
+
+    cur.execute(sql("""
+        UPDATE betting_matches
+        SET status = 'settled', result = ?
+        WHERE guild_id = ? AND match_id = ?
+    """), (result, guild_id, match_id))
+
+    conn.commit()
+    conn.close()
+    return winners, total_paid
+
+
+def betting_match_embed(match_row: dict) -> discord.Embed:
+    status_map = {
+        "open": "🟢 Otwarte",
+        "closed": "🟡 Zamknięte",
+        "settled": "🔴 Rozliczone",
+    }
+    embed = discord.Embed(
+        title=f"⚽ Mecz #{match_row['match_id']}",
+        description=f"**{match_row['home_team']}** vs **{match_row['away_team']}**",
+        color=discord.Color.green() if match_row["status"] == "open" else discord.Color.orange()
+    )
+    embed.add_field(name="Start", value=f"<t:{int(match_row['start_ts'])}:F>", inline=False)
+    embed.add_field(
+        name="Kursy",
+        value=f"1 = {float(match_row['odds_home']):.2f}\nX = {float(match_row['odds_draw']):.2f}\n2 = {float(match_row['odds_away']):.2f}",
+        inline=False
+    )
+    embed.add_field(name="Status", value=status_map.get(match_row["status"], str(match_row["status"])), inline=False)
+    if match_row.get("result"):
+        embed.add_field(name="Wynik do rozliczenia", value=str(match_row["result"]), inline=False)
+    return embed
+
+
+def betting_list_embed(rows: list[dict]) -> discord.Embed:
+    embed = discord.Embed(title="⚽ Lista meczów", color=discord.Color.blurple())
+    if not rows:
+        embed.description = "Brak meczów do pokazania."
+        return embed
+
+    lines = []
+    for row in rows[:10]:
+        lines.append(
+            f"**#{row['match_id']}** | {row['home_team']} vs {row['away_team']} | "
+            f"<t:{int(row['start_ts'])}:R> | **{row['status']}**"
+        )
+    embed.description = "\n".join(lines)
+    return embed
+
+
+def my_bets_embed(rows: list[dict]) -> discord.Embed:
+    embed = discord.Embed(title="🎯 Twoje typy", color=discord.Color.gold())
+    if not rows:
+        embed.description = "Nie masz jeszcze żadnych typów."
+        return embed
+
+    lines = []
+    for row in rows[:10]:
+        result_txt = f" | wynik: {row['result']}" if row.get("result") else ""
+        lines.append(
+            f"**#{row['match_id']}** | {row['home_team']} vs {row['away_team']} | "
+            f"typ: **{row['pick']}** | stawka: **{row['stake']} pkt** | "
+            f"wygrana: **{row['potential_win']} pkt** | status: **{row['status']}**{result_txt}"
+        )
+    embed.description = "\n".join(lines)
+    return embed
+
 
 
 # =========================================================
@@ -1323,7 +1635,6 @@ def xpinfo_embed() -> discord.Embed:
     embed.add_field(name="🌌 AURA", value="Prestiżowa rola wizualna do kupienia w sklepie.", inline=False)
     embed.add_field(name="🛡️ System kar", value=f"AutoMod daje warny. 1 = ostrzeżenie, 10 = kick, 20 = ban. Co {AUTOMOD_WARN_DECAY_HOURS}h bez przewinień schodzi 1 warn.", inline=False)
     embed.add_field(name="🔗 Linki", value="Discord invite = natychmiastowy ban. TikTok / YouTube / Kick / skrócone linki = usunięcie + warn.", inline=False)
-    embed.add_field(name="⚙️ Moderacja czata", value="Komendy: /moderacja_czata on|off oraz /status_moderacji", inline=False)
     embed.add_field(name="❌ Punkty VC nie lecą gdy", value="bot / mute / deaf / kanał AFK", inline=False)
     return embed
 
@@ -1793,7 +2104,7 @@ async def on_message(message: discord.Message):
     if not message.content or not message.content.strip():
         return
 
-    if AUTOMOD_ENABLED and CHAT_MODERATION_ENABLED and isinstance(message.channel, discord.TextChannel):
+    if AUTOMOD_ENABLED and isinstance(message.channel, discord.TextChannel):
         if is_moderated_channel(message.channel):
             member = message.guild.get_member(message.author.id)
 
@@ -2199,33 +2510,6 @@ async def skrzynki_historia(interaction: discord.Interaction):
     history = get_last_crate_history(interaction.guild.id, interaction.user.id, 5)
     await safe_interaction_send(interaction, embed=crate_history_embed(interaction.user, history), ephemeral=True)
 
-@bot.tree.command(name="moderacja_czata", description="Włącza lub wyłącza moderację czata")
-@app_commands.checks.has_permissions(manage_messages=True)
-@app_commands.describe(tryb="on = włącz, off = wyłącz")
-@app_commands.choices(tryb=[
-    app_commands.Choice(name="on", value="on"),
-    app_commands.Choice(name="off", value="off"),
-])
-async def moderacja_czata(interaction: discord.Interaction, tryb: app_commands.Choice[str]):
-    if interaction.guild is None:
-        await safe_interaction_send(interaction, content="Ta komenda działa tylko na serwerze.", ephemeral=True)
-        return
-
-    enabled = tryb.value == "on"
-    set_chat_moderation_enabled(enabled)
-
-    if enabled:
-        await safe_interaction_send(interaction, content="✅ Moderacja czata została **włączona**.", ephemeral=True)
-    else:
-        await safe_interaction_send(interaction, content="⛔ Moderacja czata została **wyłączona**.", ephemeral=True)
-
-
-@bot.tree.command(name="status_moderacji", description="Pokazuje status moderacji czata")
-async def status_moderacji(interaction: discord.Interaction):
-    status = "włączona" if is_chat_moderation_enabled() else "wyłączona"
-    await safe_interaction_send(interaction, content=f"🛡️ Moderacja czata jest teraz **{status}**.", ephemeral=True)
-
-
 @bot.tree.command(name="warny", description="Pokazuje liczbę warnów użytkownika")
 async def warny(interaction: discord.Interaction):
     if interaction.guild is None:
@@ -2269,6 +2553,182 @@ async def reset_warnow(interaction: discord.Interaction, uzytkownik: discord.Mem
     clear_automod_warnings(interaction.guild.id, uzytkownik.id)
     await safe_interaction_send(interaction, content=f"✅ Zresetowano warny użytkownika {uzytkownik.mention}.", ephemeral=True)
 
+
+
+@bot.tree.command(name="dodaj_mecz", description="Dodaje mecz do obstawiania")
+@app_commands.checks.has_permissions(manage_guild=True)
+@app_commands.describe(
+    gospodarze="Nazwa gospodarzy",
+    goscie="Nazwa gości",
+    start_unix="Czas startu meczu jako UNIX timestamp",
+    kurs_1="Kurs na 1",
+    kurs_x="Kurs na X",
+    kurs_2="Kurs na 2",
+)
+async def dodaj_mecz(
+    interaction: discord.Interaction,
+    gospodarze: str,
+    goscie: str,
+    start_unix: int,
+    kurs_1: float,
+    kurs_x: float,
+    kurs_2: float,
+):
+    if interaction.guild is None:
+        await safe_interaction_send(interaction, content="Ta komenda działa tylko na serwerze.", ephemeral=True)
+        return
+
+    open_matches = list_betting_matches(interaction.guild.id, status="open", limit=BETTING_MAX_OPEN_MATCHES_PER_GUILD + 5)
+    if len(open_matches) >= BETTING_MAX_OPEN_MATCHES_PER_GUILD:
+        await safe_interaction_send(interaction, content="❌ Osiągnięto limit otwartych meczów.", ephemeral=True)
+        return
+
+    if kurs_1 <= 1 or kurs_x <= 1 or kurs_2 <= 1:
+        await safe_interaction_send(interaction, content="❌ Każdy kurs musi być większy od 1.00.", ephemeral=True)
+        return
+
+    match_id = create_betting_match(
+        interaction.guild.id,
+        gospodarze.strip(),
+        goscie.strip(),
+        int(start_unix),
+        float(kurs_1),
+        float(kurs_x),
+        float(kurs_2),
+        interaction.user.id,
+    )
+    match_row = get_betting_match(interaction.guild.id, match_id)
+    await safe_interaction_send(interaction, embed=betting_match_embed(match_row), ephemeral=False)
+
+
+@bot.tree.command(name="lista_meczy", description="Pokazuje listę meczów do obstawiania")
+@app_commands.describe(status="open, closed albo settled")
+async def lista_meczy(interaction: discord.Interaction, status: str | None = None):
+    if interaction.guild is None:
+        await safe_interaction_send(interaction, content="Ta komenda działa tylko na serwerze.", ephemeral=True)
+        return
+
+    status_value = status.lower().strip() if status else None
+    if status_value not in (None, "open", "closed", "settled"):
+        await safe_interaction_send(interaction, content="❌ Dozwolone statusy: open, closed, settled.", ephemeral=True)
+        return
+
+    rows = list_betting_matches(interaction.guild.id, status=status_value, limit=20)
+    await safe_interaction_send(interaction, embed=betting_list_embed(rows), ephemeral=False)
+
+
+@bot.tree.command(name="obstaw", description="Obstawia mecz za punkty")
+@app_commands.describe(
+    mecz_id="ID meczu",
+    typ="1, X albo 2",
+    stawka="Ile punktów chcesz postawić",
+)
+async def obstaw(interaction: discord.Interaction, mecz_id: int, typ: str, stawka: int):
+    if interaction.guild is None:
+        await safe_interaction_send(interaction, content="Ta komenda działa tylko na serwerze.", ephemeral=True)
+        return
+
+    pick = typ.upper().strip()
+    if pick not in {"1", "X", "2"}:
+        await safe_interaction_send(interaction, content="❌ Typ musi być: 1, X albo 2.", ephemeral=True)
+        return
+
+    if stawka < BETTING_MIN_STAKE:
+        await safe_interaction_send(interaction, content=f"❌ Minimalna stawka to {BETTING_MIN_STAKE} pkt.", ephemeral=True)
+        return
+
+    match_row = get_betting_match(interaction.guild.id, mecz_id)
+    if not match_row:
+        await safe_interaction_send(interaction, content="❌ Nie znaleziono meczu.", ephemeral=True)
+        return
+
+    if match_row["status"] != "open":
+        await safe_interaction_send(interaction, content="❌ Ten mecz nie jest już otwarty do obstawiania.", ephemeral=True)
+        return
+
+    if int(match_row["start_ts"]) <= int(time.time()):
+        await safe_interaction_send(interaction, content="❌ Czas obstawiania minął.", ephemeral=True)
+        return
+
+    existing_bet = get_user_bet(interaction.guild.id, mecz_id, interaction.user.id)
+    if existing_bet:
+        await safe_interaction_send(interaction, content="❌ Już obstawiłeś ten mecz.", ephemeral=True)
+        return
+
+    points_row = get_points_row(interaction.guild.id, interaction.user.id)
+    total_points = int(points_row["total_points"]) if points_row else 0
+    if total_points < stawka:
+        await safe_interaction_send(interaction, content="❌ Nie masz tyle punktów.", ephemeral=True)
+        return
+
+    odds = get_bet_odds_for_pick(match_row, pick)
+    potential_win = int(round(stawka * odds))
+
+    inserted = place_bet(interaction.guild.id, mecz_id, interaction.user.id, pick, stawka, potential_win)
+    if not inserted:
+        await safe_interaction_send(interaction, content="❌ Nie udało się zapisać zakładu.", ephemeral=True)
+        return
+
+    remove_total_points(interaction.guild.id, interaction.user.id, stawka)
+
+    embed = discord.Embed(title="✅ Zakład przyjęty", color=discord.Color.green())
+    embed.add_field(name="Mecz", value=f"#{mecz_id} | {match_row['home_team']} vs {match_row['away_team']}", inline=False)
+    embed.add_field(name="Typ", value=pick, inline=True)
+    embed.add_field(name="Stawka", value=f"{stawka} pkt", inline=True)
+    embed.add_field(name="Możliwa wygrana", value=f"{potential_win} pkt", inline=True)
+    await safe_interaction_send(interaction, embed=embed, ephemeral=True)
+
+
+@bot.tree.command(name="moje_typy", description="Pokazuje Twoje obstawione mecze")
+async def moje_typy(interaction: discord.Interaction):
+    if interaction.guild is None:
+        await safe_interaction_send(interaction, content="Ta komenda działa tylko na serwerze.", ephemeral=True)
+        return
+
+    rows = list_user_bets(interaction.guild.id, interaction.user.id, limit=20)
+    await safe_interaction_send(interaction, embed=my_bets_embed(rows), ephemeral=True)
+
+
+@bot.tree.command(name="zamknij_obstawianie", description="Zamyka obstawianie dla meczu")
+@app_commands.checks.has_permissions(manage_guild=True)
+@app_commands.describe(mecz_id="ID meczu")
+async def zamknij_obstawianie(interaction: discord.Interaction, mecz_id: int):
+    if interaction.guild is None:
+        await safe_interaction_send(interaction, content="Ta komenda działa tylko na serwerze.", ephemeral=True)
+        return
+
+    changed = close_betting_match(interaction.guild.id, mecz_id)
+    if not changed:
+        await safe_interaction_send(interaction, content="❌ Nie udało się zamknąć obstawiania. Sprawdź ID meczu lub status.", ephemeral=True)
+        return
+
+    match_row = get_betting_match(interaction.guild.id, mecz_id)
+    await safe_interaction_send(interaction, embed=betting_match_embed(match_row), ephemeral=False)
+
+
+@bot.tree.command(name="wynik_meczu", description="Rozlicza mecz i wypłaca wygrane")
+@app_commands.checks.has_permissions(manage_guild=True)
+@app_commands.describe(mecz_id="ID meczu", wynik="1, X albo 2")
+async def wynik_meczu(interaction: discord.Interaction, mecz_id: int, wynik: str):
+    if interaction.guild is None:
+        await safe_interaction_send(interaction, content="Ta komenda działa tylko na serwerze.", ephemeral=True)
+        return
+
+    result = wynik.upper().strip()
+    if result not in {"1", "X", "2"}:
+        await safe_interaction_send(interaction, content="❌ Wynik musi być: 1, X albo 2.", ephemeral=True)
+        return
+
+    try:
+        winners, total_paid = settle_betting_match(interaction.guild.id, mecz_id, result)
+    except ValueError as e:
+        await safe_interaction_send(interaction, content=f"❌ {e}", ephemeral=True)
+        return
+
+    match_row = get_betting_match(interaction.guild.id, mecz_id)
+    embed = betting_match_embed(match_row)
+    embed.add_field(name="Rozliczenie", value=f"Wynik: **{result}**\nWygrani: **{winners}**\nWypłacono: **{total_paid} pkt**", inline=False)
+    await safe_interaction_send(interaction, embed=embed, ephemeral=False)
 
 @bot.tree.command(name="odswiez_panele", description="Odświeża wszystkie panele bota")
 @app_commands.checks.has_permissions(manage_guild=True)
