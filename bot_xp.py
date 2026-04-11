@@ -518,34 +518,6 @@ def init_db() -> None:
             )
         """)
         cur.execute("""
-            CREATE TABLE IF NOT EXISTS betting_matches (
-                match_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                guild_id INTEGER NOT NULL,
-                home_team TEXT NOT NULL,
-                away_team TEXT NOT NULL,
-                start_ts INTEGER NOT NULL,
-                odds_home REAL NOT NULL,
-                odds_draw REAL NOT NULL,
-                odds_away REAL NOT NULL,
-                status TEXT NOT NULL DEFAULT 'open',
-                result TEXT,
-                created_by INTEGER NOT NULL,
-                created_at INTEGER NOT NULL
-            )
-        """)
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS betting_bets (
-                guild_id INTEGER NOT NULL,
-                match_id INTEGER NOT NULL,
-                user_id INTEGER NOT NULL,
-                pick TEXT NOT NULL,
-                stake INTEGER NOT NULL,
-                potential_win INTEGER NOT NULL,
-                created_at INTEGER NOT NULL,
-                PRIMARY KEY (guild_id, match_id, user_id)
-            )
-        """)
-        cur.execute("""
             CREATE TABLE IF NOT EXISTS xp_boosts (
                 guild_id BIGINT NOT NULL,
                 user_id BIGINT NOT NULL,
