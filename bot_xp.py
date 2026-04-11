@@ -1148,7 +1148,17 @@ def create_betting_match(
             RETURNING match_id
         """, (guild_id, home_team, away_team, int(start_ts), float(odds_home), float(odds_draw), float(odds_away), created_by, now_ts))
         row = cur.fetchone()
-        match_id = int(row[0])
+        if row is None:
+            conn.rollback()
+            conn.close()
+            raise RuntimeError("Nie udało się utworzyć meczu.")
+        if isinstance(row, dict):
+            match_id = int(row["match_id"])
+        else:
+            try:
+                match_id = int(row["match_id"])
+            except Exception:
+                match_id = int(row[0])
     else:
         cur.execute("""
             INSERT INTO betting_matches (
@@ -2559,17 +2569,26 @@ async def dodaj_mecz(
         await safe_interaction_send(interaction, content="❌ Każdy kurs musi być większy od 1.00.", ephemeral=True)
         return
 
-    match_id = create_betting_match(
-        interaction.guild.id,
-        gospodarze.strip(),
-        goscie.strip(),
-        int(start_unix),
-        float(kurs_1),
-        float(kurs_x),
-        float(kurs_2),
-        interaction.user.id,
-    )
+    try:
+        match_id = create_betting_match(
+            interaction.guild.id,
+            gospodarze.strip(),
+            goscie.strip(),
+            int(start_unix),
+            float(kurs_1),
+            float(kurs_x),
+            float(kurs_2),
+            interaction.user.id,
+        )
+    except Exception as e:
+        await safe_interaction_send(interaction, content=f"❌ Nie udało się dodać meczu: {e}", ephemeral=True)
+        return
+
     match_row = get_betting_match(interaction.guild.id, match_id)
+    if not match_row:
+        await safe_interaction_send(interaction, content="❌ Mecz został dodany, ale nie udało się go odczytać z bazy.", ephemeral=True)
+        return
+
     await safe_interaction_send(interaction, embed=betting_match_embed(match_row), ephemeral=False)
 
 
