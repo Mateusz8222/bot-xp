@@ -624,6 +624,74 @@ def delete_user_data(guild_id: int, user_id: int) -> None:
         WHERE guild_id = ? AND user_id = ?
     """), (guild_id, user_id))
 
+    cur.execute(sql("""
+        DELETE FROM automod_warnings
+        WHERE guild_id = ? AND user_id = ?
+    """), (guild_id, user_id))
+
+    conn.commit()
+    conn.close()
+
+
+def get_automod_warning_count(guild_id: int, user_id: int) -> int:
+    conn = db_connect()
+    cur = conn.cursor()
+    cur.execute(sql("""
+        SELECT warning_count
+        FROM automod_warnings
+        WHERE guild_id = ? AND user_id = ?
+    """), (guild_id, user_id))
+    row = fetchone_dict(cur)
+    conn.close()
+    return int(row["warning_count"]) if row else 0
+
+
+def add_automod_warning(guild_id: int, user_id: int, reason: str) -> int:
+    now_ts = int(time.time())
+    conn = db_connect()
+    cur = conn.cursor()
+
+    if USING_POSTGRES:
+        cur.execute("""
+            INSERT INTO automod_warnings (guild_id, user_id, warning_count, last_reason, updated_at)
+            VALUES (%s, %s, 1, %s, %s)
+            ON CONFLICT (guild_id, user_id)
+            DO UPDATE SET
+                warning_count = automod_warnings.warning_count + 1,
+                last_reason = EXCLUDED.last_reason,
+                updated_at = EXCLUDED.updated_at
+        """, (guild_id, user_id, reason, now_ts))
+    else:
+        cur.execute("""
+            INSERT OR IGNORE INTO automod_warnings (guild_id, user_id, warning_count, last_reason, updated_at)
+            VALUES (?, ?, 0, ?, ?)
+        """, (guild_id, user_id, reason, now_ts))
+        cur.execute("""
+            UPDATE automod_warnings
+            SET warning_count = warning_count + 1,
+                last_reason = ?,
+                updated_at = ?
+            WHERE guild_id = ? AND user_id = ?
+        """, (reason, now_ts, guild_id, user_id))
+
+    cur.execute(sql("""
+        SELECT warning_count
+        FROM automod_warnings
+        WHERE guild_id = ? AND user_id = ?
+    """), (guild_id, user_id))
+    row = fetchone_dict(cur)
+    conn.commit()
+    conn.close()
+    return int(row["warning_count"]) if row else 1
+
+
+def clear_automod_warnings(guild_id: int, user_id: int) -> None:
+    conn = db_connect()
+    cur = conn.cursor()
+    cur.execute(sql("""
+        DELETE FROM automod_warnings
+        WHERE guild_id = ? AND user_id = ?
+    """), (guild_id, user_id))
     conn.commit()
     conn.close()
 
