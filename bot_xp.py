@@ -37,6 +37,8 @@ AUTOMOD_WARN_TIMEOUTS = {
     5: 60,
     7: 1440,
 }
+AUTOMOD_WARN_EXPIRY_DAYS = 7
+AUTOMOD_WARN_KICK_AT = 10
 AUTOMOD_EXCLUDED_CHANNEL_IDS = {
     POINTS_CHANNEL_ID,
     RANKING_CHANNEL_ID,
@@ -633,7 +635,34 @@ def delete_user_data(guild_id: int, user_id: int) -> None:
     conn.close()
 
 
+def expire_automod_warnings(guild_id: int, user_id: int) -> None:
+    now_ts = int(time.time())
+    expiry_seconds = AUTOMOD_WARN_EXPIRY_DAYS * 86400
+
+    conn = db_connect()
+    cur = conn.cursor()
+    cur.execute(sql("""
+        SELECT updated_at
+        FROM automod_warnings
+        WHERE guild_id = ? AND user_id = ?
+    """), (guild_id, user_id))
+    row = fetchone_dict(cur)
+
+    if row:
+        last_update = int(row["updated_at"])
+        if now_ts - last_update >= expiry_seconds:
+            cur.execute(sql("""
+                DELETE FROM automod_warnings
+                WHERE guild_id = ? AND user_id = ?
+            """), (guild_id, user_id))
+            conn.commit()
+
+    conn.close()
+
+
 def get_automod_warning_count(guild_id: int, user_id: int) -> int:
+    expire_automod_warnings(guild_id, user_id)
+
     conn = db_connect()
     cur = conn.cursor()
     cur.execute(sql("""
@@ -647,6 +676,7 @@ def get_automod_warning_count(guild_id: int, user_id: int) -> int:
 
 
 def add_automod_warning(guild_id: int, user_id: int, reason: str) -> int:
+    expire_automod_warnings(guild_id, user_id)
     now_ts = int(time.time())
     conn = db_connect()
     cur = conn.cursor()
@@ -1185,7 +1215,7 @@ def xpinfo_embed() -> discord.Embed:
     embed.add_field(name="📦 Skrzynki", value="Mogą wypaść punkty, role, medale albo pusta skrzynka.", inline=False)
     embed.add_field(name="⚡ Booster XP", value="+25% XP przez 1 godzinę po zakupie.", inline=False)
     embed.add_field(name="🌌 AURA", value="Prestiżowa rola wizualna do kupienia w sklepie.", inline=False)
-    embed.add_field(name="🛡️ System kar", value="AutoMod daje warny. 3 = 10 min timeout, 5 = 1h, 7 = 24h.", inline=False)
+    embed.add_field(name="🛡️ System kar", value=f"AutoMod daje warny. 3 = 10 min timeout, 5 = 1h, 7 = 24h, 10 = kick. Warny wygasają po {AUTOMOD_WARN_EXPIRY_DAYS} dniach.", inline=False)
     embed.add_field(name="❌ Punkty VC nie lecą gdy", value="bot / mute / deaf / kanał AFK", inline=False)
     return embed
 
@@ -1667,21 +1697,28 @@ async def on_message(message: discord.Message):
                 warn_count = add_automod_warning(message.guild.id, message.author.id, violation)
                 timeout_minutes = AUTOMOD_WARN_TIMEOUTS.get(warn_count)
 
-                timeout_text = ""
+                action_text = ""
                 member = message.guild.get_member(message.author.id)
 
-                if timeout_minutes and member is not None:
+                if member is not None and warn_count >= AUTOMOD_WARN_KICK_AT:
+                    try:
+                        await member.kick(reason=f"AutoMod hardcore: {violation} | warn #{warn_count}")
+                        delete_user_data(message.guild.id, member.id)
+                        action_text = " Osiągnięto limit warnów — użytkownik został **wyrzucony z serwera**."
+                    except Exception:
+                        action_text = ""
+                elif timeout_minutes and member is not None:
                     try:
                         until = datetime.now(timezone.utc) + timedelta(minutes=timeout_minutes)
                         await member.timeout(until, reason=f"AutoMod: {violation} | warn #{warn_count}")
-                        timeout_text = f" Otrzymujesz też timeout na **{timeout_minutes} minut**."
+                        action_text = f" Otrzymujesz też timeout na **{timeout_minutes} minut**."
                     except Exception:
-                        timeout_text = ""
+                        action_text = ""
 
                 if AUTOMOD_DELETE_AND_WARN:
                     try:
                         warning = await message.channel.send(
-                            f"⚠️ {message.author.mention}, wiadomość usunięta za: **{violation}**. Masz teraz **{warn_count} warnów**.{timeout_text}"
+                            f"⚠️ {message.author.mention}, wiadomość usunięta za: **{violation}**. Masz teraz **{warn_count} warnów**.{action_text}"
                         )
                         await warning.delete(delay=AUTOMOD_WARNING_DELETE_AFTER)
                     except discord.HTTPException:
@@ -1969,7 +2006,25 @@ async def warny(interaction: discord.Interaction):
     count = get_automod_warning_count(interaction.guild.id, interaction.user.id)
     embed = discord.Embed(title="🛡️ Twoje warny", color=discord.Color.orange())
     embed.add_field(name="Liczba warnów", value=str(count), inline=False)
-    embed.add_field(name="Kary", value="3 warny = 10 min timeout\n5 warnów = 1h timeout\n7 warnów = 24h timeout", inline=False)
+    embed.add_field(name="Kary", value="3 warny = 10 min timeout\n5 warnów = 1h timeout\n7 warnów = 24h timeout\n10 warnów = kick", inline=False)
+    embed.add_field(name="Wygasanie", value=f"Warny wygasają po {AUTOMOD_WARN_EXPIRY_DAYS} dniach.", inline=False)
+    await safe_interaction_send(interaction, embed=embed, ephemeral=True)
+
+
+@bot.tree.command(name="warny_admin", description="Pokazuje warny wybranego użytkownika")
+@app_commands.checks.has_permissions(manage_messages=True)
+@app_commands.describe(uzytkownik="Użytkownik do sprawdzenia")
+async def warny_admin(interaction: discord.Interaction, uzytkownik: discord.Member):
+    if interaction.guild is None:
+        await safe_interaction_send(interaction, content="Ta komenda działa tylko na serwerze.", ephemeral=True)
+        return
+
+    count = get_automod_warning_count(interaction.guild.id, uzytkownik.id)
+    embed = discord.Embed(title="🛡️ Warny użytkownika", color=discord.Color.orange())
+    embed.add_field(name="Użytkownik", value=uzytkownik.mention, inline=False)
+    embed.add_field(name="Liczba warnów", value=str(count), inline=False)
+    embed.add_field(name="Wygasanie", value=f"Warny wygasają po {AUTOMOD_WARN_EXPIRY_DAYS} dniach.", inline=False)
+    embed.add_field(name="Kary", value="3 = 10 min timeout\n5 = 1h timeout\n7 = 24h timeout\n10 = kick", inline=False)
     await safe_interaction_send(interaction, embed=embed, ephemeral=True)
 
 
