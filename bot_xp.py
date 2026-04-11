@@ -80,6 +80,9 @@ AUTOMOD_BAD_PATTERNS = [
     r"\bnapierdal[a-ząćęłńóśźż]*\b",
     r"\bopierdal[a-ząćęłńóśźż]*\b",
     r"\bwpierdol[a-ząćęłńóśźż]*\b",
+    r"\bwkurw[a-ząćęłńóśźż]*\b",
+    r"\bwkurwic\b",
+    r"\bwkurwic\s+sie\b",
     r"\brozpierdol[a-ząćęłńóśźż]*\b",
     r"\brozpierdoli[mnwyćcsząężźłó]*\b",
 
@@ -108,6 +111,7 @@ AUTOMOD_BAD_PATTERNS = [
 
     r"\bdziwk[a-ząćęłńóśźż]*\b",
     r"\bdziwki\b",
+    r"\bdz1wka\b",
     r"\bkurtyzan[a-ząćęłńóśźż]*\b",
 
     r"\bfiut[a-ząćęłńóśźż]*\b",
@@ -119,6 +123,10 @@ AUTOMOD_BAD_PATTERNS = [
     r"\bpa[lł]o\b",
 
     r"\bdebil[a-ząćęłńóśźż]*\b",
+    r"\buposledzeniec\b",
+    r"\bupo[sś]\b",
+    r"\bniepelnosprawny\b",
+    r"\bniepelnosprawna\b",
     r"\bidiot[a-ząćęłńóśźż]*\b",
     r"\bimbecyl[a-ząćęłńóśźż]*\b",
     r"\bkretyn[a-ząćęłńóśźż]*\b",
@@ -142,7 +150,14 @@ AUTOMOD_BAD_PATTERNS = [
     r"\bgn[óo]j[a-ząćęłńóśźż]*\b",
     r"\bpadlin[a-ząćęłńóśźż]*\b",
     r"\btrupie\b",
+    r"\bkongo\b",
+    r"\bkng\b",
+    r"\bdupa\b",
+    r"\bmorda\b",
+    r"\bpedal[a-ząćęłńóśźż]*\b",
+    r"\bpeda[lł][a-ząćęłńóśźż]*\b",
 ]
+
 AUTOMOD_THREAT_PATTERNS = [
     r"\bzabij[eę]\s+ci[eę]\b",
     r"\bzajebi[eę]\s+ci[eę]\b",
@@ -176,6 +191,9 @@ AUTOMOD_INSULT_PATTERNS = [
     r"\bjebany\s+gej\b",
     r"\bpieprzony\s+gej\b",
     r"\bbrudny\s+gej\b",
+    r"\bstary\b",
+    r"\btwoj\s+stary\b",
+    r"\btwojka\s+stara\b",
 
     # obrażanie rodziców i rodziny
     r"\bjebac\s+twoja\s+matke\b",
@@ -189,6 +207,17 @@ AUTOMOD_INSULT_PATTERNS = [
     r"\btwoja\s+rodzina\s+to\b",
     r"\bmatke\s+ci\s+jebac\b",
     r"\bstara\s+kurwa\b",
+    r"\bwalony\s+w\s+dupe\b",
+    r"\bwalony\s+w\s+dupa\b",
+    r"\bwalony\s+w\s+dupie\b",
+    r"\bw\s+dupe\b",
+    r"\bw\s+dupa\b",
+    r"\bw\s+dupie\b",
+    r"\bmorda\b",
+    r"\bcwel\b",
+    r"\bcwele\b",
+    r"\bpedal\b",
+    r"\bpeda[lł]\b",
 ]
 
 # =========================================================
@@ -997,6 +1026,9 @@ def detect_automod_violation(content: str):
                     return "obrażanie rodziców / rodziny"
                 return "obrażanie"
 
+        if any(bad in text_variant for bad in ["cwel", "pedal", "pedał", "morda", "walonywdupe", "walonywdupa", "walonywdupie"]):
+            return "obrażanie"
+
     return None
 
 
@@ -1231,7 +1263,7 @@ def xpinfo_embed() -> discord.Embed:
     embed.add_field(name="📦 Skrzynki", value="Mogą wypaść punkty, role, medale albo pusta skrzynka.", inline=False)
     embed.add_field(name="⚡ Booster XP", value="+25% XP przez 1 godzinę po zakupie.", inline=False)
     embed.add_field(name="🌌 AURA", value="Prestiżowa rola wizualna do kupienia w sklepie.", inline=False)
-    embed.add_field(name="🛡️ System kar", value=f"AutoMod daje warny. 3 = 10 min timeout, 5 = 1h, 7 = 24h, 10 = kick, 20 = ban. Co {AUTOMOD_WARN_DECAY_HOURS}h bez przewinień schodzi 1 warn.", inline=False)
+    embed.add_field(name="🛡️ System kar", value=f"AutoMod daje warny. 1 = ostrzeżenie, 10 = kick, 20 = ban. Co {AUTOMOD_WARN_DECAY_HOURS}h bez przewinień schodzi 1 warn.", inline=False)
     embed.add_field(name="❌ Punkty VC nie lecą gdy", value="bot / mute / deaf / kanał AFK", inline=False)
     return embed
 
@@ -1711,7 +1743,6 @@ async def on_message(message: discord.Message):
                     pass
 
                 warn_count = add_automod_warning(message.guild.id, message.author.id, violation)
-                timeout_minutes = AUTOMOD_WARN_TIMEOUTS.get(warn_count)
 
                 action_text = ""
                 member = message.guild.get_member(message.author.id)
@@ -1730,13 +1761,8 @@ async def on_message(message: discord.Message):
                         action_text = " Osiągnięto limit warnów — użytkownik został **wyrzucony z serwera**."
                     except Exception:
                         action_text = ""
-                elif timeout_minutes and member is not None:
-                    try:
-                        until = datetime.now(timezone.utc) + timedelta(minutes=timeout_minutes)
-                        await member.timeout(until, reason=f"AutoMod: {violation} | warn #{warn_count}")
-                        action_text = f" Otrzymujesz też timeout na **{timeout_minutes} minut**."
-                    except Exception:
-                        action_text = ""
+                elif warn_count == 1:
+                    action_text = " Zachowuj się bo wylecisz."
 
                 if AUTOMOD_DELETE_AND_WARN:
                     try:
@@ -2029,7 +2055,7 @@ async def warny(interaction: discord.Interaction):
     count = get_automod_warning_count(interaction.guild.id, interaction.user.id)
     embed = discord.Embed(title="🛡️ Twoje warny", color=discord.Color.orange())
     embed.add_field(name="Liczba warnów", value=str(count), inline=False)
-    embed.add_field(name="Kary", value="3 warny = 10 min timeout\n5 warnów = 1h timeout\n7 warnów = 24h timeout\n10 warnów = kick\n20 warnów = ban", inline=False)
+    embed.add_field(name="Kary", value="1 warn = ostrzeżenie\n10 warnów = kick\n20 warnów = ban", inline=False)
     embed.add_field(name="Zmniejszanie warnów", value=f"Co {AUTOMOD_WARN_DECAY_HOURS}h bez przewinień schodzi 1 warn.", inline=False)
     await safe_interaction_send(interaction, embed=embed, ephemeral=True)
 
@@ -2047,7 +2073,7 @@ async def warny_admin(interaction: discord.Interaction, uzytkownik: discord.Memb
     embed.add_field(name="Użytkownik", value=uzytkownik.mention, inline=False)
     embed.add_field(name="Liczba warnów", value=str(count), inline=False)
     embed.add_field(name="Zmniejszanie warnów", value=f"Co {AUTOMOD_WARN_DECAY_HOURS}h bez przewinień schodzi 1 warn.", inline=False)
-    embed.add_field(name="Kary", value="3 = 10 min timeout\n5 = 1h timeout\n7 = 24h timeout\n10 = kick\n20 = ban", inline=False)
+    embed.add_field(name="Kary", value="1 = ostrzeżenie\n10 = kick\n20 = ban", inline=False)
     await safe_interaction_send(interaction, embed=embed, ephemeral=True)
 
 
@@ -2126,19 +2152,3 @@ async def on_member_remove(member: discord.Member):
         embed.add_field(name="Powód", value=reason, inline=False)
 
     await send_admin_log(guild, embed)
-
-
-# ===== ULTRA HARDCORE FILTER =====
-EXTRA_BAD_WORDS = [
-    "stary","twoj stary","twojka stara",
-    "kongo","kng",
-    "popierdolony","popierdolona",
-    "zboczeniec","zboczony"
-]
-
-def contains_bad_link(content: str) -> bool:
-    content = content.lower()
-    suspicious = ["porn","sex","xvideos","xnxx","redtube","onlyfans","pornhub","18+"]
-    if "http" in content or "www" in content:
-        return any(s in content for s in suspicious)
-    return False
