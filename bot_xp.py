@@ -30,6 +30,7 @@ SHOP_LOG_CHANNEL_ID = 1491934996745683035      # 📜・logi-pod-sklep
 ADMIN_LOG_CHANNEL_ID = 1491944667124596836     # 📜・logi-administracyjne
 
 AUTOMOD_ENABLED = True
+CHAT_MODERATION_ENABLED = True
 AUTOMOD_DELETE_AND_WARN = True
 AUTOMOD_WARNING_DELETE_AFTER = 8
 AUTOMOD_WARN_TIMEOUTS = {
@@ -1058,6 +1059,15 @@ def detect_automod_violation(content: str):
     return None
 
 
+def is_chat_moderation_enabled() -> bool:
+    return CHAT_MODERATION_ENABLED
+
+
+def set_chat_moderation_enabled(value: bool) -> None:
+    global CHAT_MODERATION_ENABLED
+    CHAT_MODERATION_ENABLED = value
+
+
 def contains_discord_invite(content: str) -> bool:
     text = content.lower()
     return (
@@ -1313,6 +1323,7 @@ def xpinfo_embed() -> discord.Embed:
     embed.add_field(name="🌌 AURA", value="Prestiżowa rola wizualna do kupienia w sklepie.", inline=False)
     embed.add_field(name="🛡️ System kar", value=f"AutoMod daje warny. 1 = ostrzeżenie, 10 = kick, 20 = ban. Co {AUTOMOD_WARN_DECAY_HOURS}h bez przewinień schodzi 1 warn.", inline=False)
     embed.add_field(name="🔗 Linki", value="Discord invite = natychmiastowy ban. TikTok / YouTube / Kick / skrócone linki = usunięcie + warn.", inline=False)
+    embed.add_field(name="⚙️ Moderacja czata", value="Komendy: /moderacja_czata on|off oraz /status_moderacji", inline=False)
     embed.add_field(name="❌ Punkty VC nie lecą gdy", value="bot / mute / deaf / kanał AFK", inline=False)
     return embed
 
@@ -1782,7 +1793,7 @@ async def on_message(message: discord.Message):
     if not message.content or not message.content.strip():
         return
 
-    if AUTOMOD_ENABLED and isinstance(message.channel, discord.TextChannel):
+    if AUTOMOD_ENABLED and CHAT_MODERATION_ENABLED and isinstance(message.channel, discord.TextChannel):
         if is_moderated_channel(message.channel):
             member = message.guild.get_member(message.author.id)
 
@@ -2187,6 +2198,33 @@ async def skrzynki_historia(interaction: discord.Interaction):
 
     history = get_last_crate_history(interaction.guild.id, interaction.user.id, 5)
     await safe_interaction_send(interaction, embed=crate_history_embed(interaction.user, history), ephemeral=True)
+
+@bot.tree.command(name="moderacja_czata", description="Włącza lub wyłącza moderację czata")
+@app_commands.checks.has_permissions(manage_messages=True)
+@app_commands.describe(tryb="on = włącz, off = wyłącz")
+@app_commands.choices(tryb=[
+    app_commands.Choice(name="on", value="on"),
+    app_commands.Choice(name="off", value="off"),
+])
+async def moderacja_czata(interaction: discord.Interaction, tryb: app_commands.Choice[str]):
+    if interaction.guild is None:
+        await safe_interaction_send(interaction, content="Ta komenda działa tylko na serwerze.", ephemeral=True)
+        return
+
+    enabled = tryb.value == "on"
+    set_chat_moderation_enabled(enabled)
+
+    if enabled:
+        await safe_interaction_send(interaction, content="✅ Moderacja czata została **włączona**.", ephemeral=True)
+    else:
+        await safe_interaction_send(interaction, content="⛔ Moderacja czata została **wyłączona**.", ephemeral=True)
+
+
+@bot.tree.command(name="status_moderacji", description="Pokazuje status moderacji czata")
+async def status_moderacji(interaction: discord.Interaction):
+    status = "włączona" if is_chat_moderation_enabled() else "wyłączona"
+    await safe_interaction_send(interaction, content=f"🛡️ Moderacja czata jest teraz **{status}**.", ephemeral=True)
+
 
 @bot.tree.command(name="warny", description="Pokazuje liczbę warnów użytkownika")
 async def warny(interaction: discord.Interaction):
