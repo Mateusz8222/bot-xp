@@ -37,8 +37,9 @@ AUTOMOD_WARN_TIMEOUTS = {
     5: 60,
     7: 1440,
 }
-AUTOMOD_WARN_EXPIRY_DAYS = 7
+AUTOMOD_WARN_DECAY_HOURS = 24
 AUTOMOD_WARN_KICK_AT = 10
+AUTOMOD_WARN_BAN_AT = 20
 AUTOMOD_EXCLUDED_CHANNEL_IDS = {
     POINTS_CHANNEL_ID,
     RANKING_CHANNEL_ID,
@@ -637,24 +638,39 @@ def delete_user_data(guild_id: int, user_id: int) -> None:
 
 def expire_automod_warnings(guild_id: int, user_id: int) -> None:
     now_ts = int(time.time())
-    expiry_seconds = AUTOMOD_WARN_EXPIRY_DAYS * 86400
+    decay_seconds = AUTOMOD_WARN_DECAY_HOURS * 3600
 
     conn = db_connect()
     cur = conn.cursor()
     cur.execute(sql("""
-        SELECT updated_at
+        SELECT warning_count, updated_at
         FROM automod_warnings
         WHERE guild_id = ? AND user_id = ?
     """), (guild_id, user_id))
     row = fetchone_dict(cur)
 
     if row:
+        warning_count = int(row["warning_count"])
         last_update = int(row["updated_at"])
-        if now_ts - last_update >= expiry_seconds:
-            cur.execute(sql("""
-                DELETE FROM automod_warnings
-                WHERE guild_id = ? AND user_id = ?
-            """), (guild_id, user_id))
+        elapsed = now_ts - last_update
+
+        if elapsed >= decay_seconds:
+            decay_steps = elapsed // decay_seconds
+            new_count = max(0, warning_count - int(decay_steps))
+
+            if new_count <= 0:
+                cur.execute(sql("""
+                    DELETE FROM automod_warnings
+                    WHERE guild_id = ? AND user_id = ?
+                """), (guild_id, user_id))
+            else:
+                refreshed_at = last_update + int(decay_steps) * decay_seconds
+                cur.execute(sql("""
+                    UPDATE automod_warnings
+                    SET warning_count = ?,
+                        updated_at = ?
+                    WHERE guild_id = ? AND user_id = ?
+                """), (new_count, refreshed_at, guild_id, user_id))
             conn.commit()
 
     conn.close()
@@ -1215,7 +1231,7 @@ def xpinfo_embed() -> discord.Embed:
     embed.add_field(name="📦 Skrzynki", value="Mogą wypaść punkty, role, medale albo pusta skrzynka.", inline=False)
     embed.add_field(name="⚡ Booster XP", value="+25% XP przez 1 godzinę po zakupie.", inline=False)
     embed.add_field(name="🌌 AURA", value="Prestiżowa rola wizualna do kupienia w sklepie.", inline=False)
-    embed.add_field(name="🛡️ System kar", value=f"AutoMod daje warny. 3 = 10 min timeout, 5 = 1h, 7 = 24h, 10 = kick. Warny wygasają po {AUTOMOD_WARN_EXPIRY_DAYS} dniach.", inline=False)
+    embed.add_field(name="🛡️ System kar", value=f"AutoMod daje warny. 3 = 10 min timeout, 5 = 1h, 7 = 24h, 10 = kick, 20 = ban. Co {AUTOMOD_WARN_DECAY_HOURS}h bez przewinień schodzi 1 warn.", inline=False)
     embed.add_field(name="❌ Punkty VC nie lecą gdy", value="bot / mute / deaf / kanał AFK", inline=False)
     return embed
 
@@ -1700,7 +1716,14 @@ async def on_message(message: discord.Message):
                 action_text = ""
                 member = message.guild.get_member(message.author.id)
 
-                if member is not None and warn_count >= AUTOMOD_WARN_KICK_AT:
+                if member is not None and warn_count >= AUTOMOD_WARN_BAN_AT:
+                    try:
+                        await member.ban(reason=f"AutoMod hardcore: {violation} | warn #{warn_count}", delete_message_days=0)
+                        delete_user_data(message.guild.id, member.id)
+                        action_text = " Osiągnięto limit warnów — użytkownik został **zbanowany**."
+                    except Exception:
+                        action_text = ""
+                elif member is not None and warn_count >= AUTOMOD_WARN_KICK_AT:
                     try:
                         await member.kick(reason=f"AutoMod hardcore: {violation} | warn #{warn_count}")
                         delete_user_data(message.guild.id, member.id)
@@ -2006,8 +2029,8 @@ async def warny(interaction: discord.Interaction):
     count = get_automod_warning_count(interaction.guild.id, interaction.user.id)
     embed = discord.Embed(title="🛡️ Twoje warny", color=discord.Color.orange())
     embed.add_field(name="Liczba warnów", value=str(count), inline=False)
-    embed.add_field(name="Kary", value="3 warny = 10 min timeout\n5 warnów = 1h timeout\n7 warnów = 24h timeout\n10 warnów = kick", inline=False)
-    embed.add_field(name="Wygasanie", value=f"Warny wygasają po {AUTOMOD_WARN_EXPIRY_DAYS} dniach.", inline=False)
+    embed.add_field(name="Kary", value="3 warny = 10 min timeout\n5 warnów = 1h timeout\n7 warnów = 24h timeout\n10 warnów = kick\n20 warnów = ban", inline=False)
+    embed.add_field(name="Zmniejszanie warnów", value=f"Co {AUTOMOD_WARN_DECAY_HOURS}h bez przewinień schodzi 1 warn.", inline=False)
     await safe_interaction_send(interaction, embed=embed, ephemeral=True)
 
 
@@ -2023,8 +2046,8 @@ async def warny_admin(interaction: discord.Interaction, uzytkownik: discord.Memb
     embed = discord.Embed(title="🛡️ Warny użytkownika", color=discord.Color.orange())
     embed.add_field(name="Użytkownik", value=uzytkownik.mention, inline=False)
     embed.add_field(name="Liczba warnów", value=str(count), inline=False)
-    embed.add_field(name="Wygasanie", value=f"Warny wygasają po {AUTOMOD_WARN_EXPIRY_DAYS} dniach.", inline=False)
-    embed.add_field(name="Kary", value="3 = 10 min timeout\n5 = 1h timeout\n7 = 24h timeout\n10 = kick", inline=False)
+    embed.add_field(name="Zmniejszanie warnów", value=f"Co {AUTOMOD_WARN_DECAY_HOURS}h bez przewinień schodzi 1 warn.", inline=False)
+    embed.add_field(name="Kary", value="3 = 10 min timeout\n5 = 1h timeout\n7 = 24h timeout\n10 = kick\n20 = ban", inline=False)
     await safe_interaction_send(interaction, embed=embed, ephemeral=True)
 
 
