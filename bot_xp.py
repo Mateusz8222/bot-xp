@@ -518,6 +518,12 @@ def init_db() -> None:
             )
         """)
         cur.execute("""
+            CREATE TABLE IF NOT EXISTS chat_moderation (
+                guild_id BIGINT PRIMARY KEY,
+                enabled INTEGER NOT NULL DEFAULT 1
+            )
+        """)
+        cur.execute("""
             CREATE TABLE IF NOT EXISTS xp_boosts (
                 guild_id BIGINT NOT NULL,
                 user_id BIGINT NOT NULL,
@@ -585,6 +591,12 @@ def init_db() -> None:
                 reward_type TEXT NOT NULL,
                 reward_value TEXT,
                 created_at INTEGER NOT NULL
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS chat_moderation (
+                guild_id INTEGER PRIMARY KEY,
+                enabled INTEGER NOT NULL DEFAULT 1
             )
         """)
 
@@ -827,6 +839,47 @@ def clear_automod_warnings(guild_id: int, user_id: int) -> None:
     """), (guild_id, user_id))
     conn.commit()
     conn.close()
+
+def is_chat_moderation_enabled(guild_id: int) -> bool:
+    conn = db_connect()
+    cur = conn.cursor()
+    cur.execute(sql("""
+        SELECT enabled
+        FROM chat_moderation
+        WHERE guild_id = ?
+    """), (guild_id,))
+    row = fetchone_dict(cur)
+    conn.close()
+
+    if row is None:
+        return True
+    return bool(int(row["enabled"]))
+
+
+def set_chat_moderation_enabled(guild_id: int, enabled: bool) -> None:
+    conn = db_connect()
+    cur = conn.cursor()
+
+    if USING_POSTGRES:
+        cur.execute("""
+            INSERT INTO chat_moderation (guild_id, enabled)
+            VALUES (%s, %s)
+            ON CONFLICT (guild_id)
+            DO UPDATE SET enabled = EXCLUDED.enabled
+        """, (guild_id, int(enabled)))
+    else:
+        cur.execute("""
+            INSERT OR REPLACE INTO chat_moderation (guild_id, enabled)
+            VALUES (?, ?)
+        """, (guild_id, int(enabled)))
+
+    conn.commit()
+    conn.close()
+
+
+def chat_moderation_status_text(guild_id: int) -> str:
+    return "🟢 WŁĄCZONA" if is_chat_moderation_enabled(guild_id) else "🔴 WYŁĄCZONA"
+
 
 def get_top_users(guild_id: int, limit: int = 10) -> list[dict]:
     conn = db_connect()
@@ -1404,6 +1457,7 @@ class XPBot(commands.Bot):
         self.add_view(PointsView(self))
         self.add_view(RankingView(self))
         self.add_view(XpInfoView(self))
+        self.add_view(ChatModerationPanelView())
 
 bot = XPBot()
 
@@ -1617,6 +1671,7 @@ def xpinfo_embed() -> discord.Embed:
     embed.add_field(name="🌌 AURA", value="Prestiżowa rola wizualna do kupienia w sklepie.", inline=False)
     embed.add_field(name="🛡️ System kar", value=f"AutoMod daje warny. 1 = ostrzeżenie, 10 = kick, 20 = ban. Co {AUTOMOD_WARN_DECAY_HOURS}h bez przewinień schodzi 1 warn.", inline=False)
     embed.add_field(name="🔗 Linki", value="Discord invite = natychmiastowy ban. TikTok / YouTube / Kick / skrócone linki = usunięcie + warn.", inline=False)
+    embed.add_field(name="⚙️ Panel moderacji", value="Użyj `/panel_moderacji`, `/moderacja_on`, `/moderacja_off`, `/status_moderacji`.", inline=False)
     embed.add_field(name="❌ Punkty VC nie lecą gdy", value="bot / mute / deaf / kanał AFK", inline=False)
     return embed
 
@@ -2075,6 +2130,61 @@ class ShopView(discord.ui.View):
     async def buy_legenda(self, interaction: discord.Interaction, button: discord.ui.Button):
         await process_shop_purchase(interaction, "legenda")
 
+class ChatModerationPanelView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="🟢 Włącz moderację", style=discord.ButtonStyle.success, custom_id="chat_mod_enable")
+    async def enable_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.guild is None:
+            await safe_interaction_send(interaction, content="Ta akcja działa tylko na serwerze.", ephemeral=True)
+            return
+        if not interaction.user.guild_permissions.manage_guild:
+            await safe_interaction_send(interaction, content="❌ Nie masz uprawnień do zarządzania serwerem.", ephemeral=True)
+            return
+
+        set_chat_moderation_enabled(interaction.guild.id, True)
+        embed = discord.Embed(
+            title="🛡️ Panel moderacji czata",
+            description=f"Status moderacji czata: **{chat_moderation_status_text(interaction.guild.id)}**",
+            color=discord.Color.green(),
+        )
+        embed.add_field(name="Sterowanie", value="Kliknij przycisk, aby włączyć lub wyłączyć moderację czata głównego.", inline=False)
+        await interaction.response.edit_message(embed=embed, view=ChatModerationPanelView())
+
+    @discord.ui.button(label="🔴 Wyłącz moderację", style=discord.ButtonStyle.danger, custom_id="chat_mod_disable")
+    async def disable_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.guild is None:
+            await safe_interaction_send(interaction, content="Ta akcja działa tylko na serwerze.", ephemeral=True)
+            return
+        if not interaction.user.guild_permissions.manage_guild:
+            await safe_interaction_send(interaction, content="❌ Nie masz uprawnień do zarządzania serwerem.", ephemeral=True)
+            return
+
+        set_chat_moderation_enabled(interaction.guild.id, False)
+        embed = discord.Embed(
+            title="🛡️ Panel moderacji czata",
+            description=f"Status moderacji czata: **{chat_moderation_status_text(interaction.guild.id)}**",
+            color=discord.Color.red(),
+        )
+        embed.add_field(name="Sterowanie", value="Kliknij przycisk, aby włączyć lub wyłączyć moderację czata głównego.", inline=False)
+        await interaction.response.edit_message(embed=embed, view=ChatModerationPanelView())
+
+    @discord.ui.button(label="📊 Status", style=discord.ButtonStyle.secondary, custom_id="chat_mod_status")
+    async def status_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.guild is None:
+            await safe_interaction_send(interaction, content="Ta akcja działa tylko na serwerze.", ephemeral=True)
+            return
+
+        embed = discord.Embed(
+            title="🛡️ Panel moderacji czata",
+            description=f"Status moderacji czata: **{chat_moderation_status_text(interaction.guild.id)}**",
+            color=discord.Color.blurple(),
+        )
+        embed.add_field(name="Sterowanie", value="Kliknij przycisk, aby włączyć lub wyłączyć moderację czata głównego.", inline=False)
+        await interaction.response.edit_message(embed=embed, view=ChatModerationPanelView())
+
+
 # =========================================================
 # EVENTY
 # =========================================================
@@ -2086,7 +2196,7 @@ async def on_message(message: discord.Message):
     if not message.content or not message.content.strip():
         return
 
-    if AUTOMOD_ENABLED and isinstance(message.channel, discord.TextChannel):
+    if AUTOMOD_ENABLED and is_chat_moderation_enabled(message.guild.id) and isinstance(message.channel, discord.TextChannel):
         if is_moderated_channel(message.channel):
             member = message.guild.get_member(message.author.id)
 
@@ -2491,6 +2601,57 @@ async def skrzynki_historia(interaction: discord.Interaction):
 
     history = get_last_crate_history(interaction.guild.id, interaction.user.id, 5)
     await safe_interaction_send(interaction, embed=crate_history_embed(interaction.user, history), ephemeral=True)
+
+@bot.tree.command(name="panel_moderacji", description="Premium panel włączania i wyłączania moderacji czata")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def panel_moderacji(interaction: discord.Interaction):
+    if interaction.guild is None:
+        await safe_interaction_send(interaction, content="Ta komenda działa tylko na serwerze.", ephemeral=True)
+        return
+
+    embed = discord.Embed(
+        title="🛡️ Panel moderacji czata",
+        description=f"Status moderacji czata: **{chat_moderation_status_text(interaction.guild.id)}**",
+        color=discord.Color.blurple(),
+    )
+    embed.add_field(name="Sterowanie", value="Kliknij przycisk poniżej, aby włączyć lub wyłączyć moderację czata głównego.", inline=False)
+    await safe_interaction_send(interaction, embed=embed, view=ChatModerationPanelView(), ephemeral=False)
+
+
+@bot.tree.command(name="moderacja_on", description="Włącza moderację czata")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def moderacja_on(interaction: discord.Interaction):
+    if interaction.guild is None:
+        await safe_interaction_send(interaction, content="Ta komenda działa tylko na serwerze.", ephemeral=True)
+        return
+
+    set_chat_moderation_enabled(interaction.guild.id, True)
+    await safe_interaction_send(interaction, content="✅ Moderacja czata została włączona.", ephemeral=True)
+
+
+@bot.tree.command(name="moderacja_off", description="Wyłącza moderację czata")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def moderacja_off(interaction: discord.Interaction):
+    if interaction.guild is None:
+        await safe_interaction_send(interaction, content="Ta komenda działa tylko na serwerze.", ephemeral=True)
+        return
+
+    set_chat_moderation_enabled(interaction.guild.id, False)
+    await safe_interaction_send(interaction, content="⛔ Moderacja czata została wyłączona.", ephemeral=True)
+
+
+@bot.tree.command(name="status_moderacji", description="Pokazuje status moderacji czata")
+async def status_moderacji(interaction: discord.Interaction):
+    if interaction.guild is None:
+        await safe_interaction_send(interaction, content="Ta komenda działa tylko na serwerze.", ephemeral=True)
+        return
+
+    await safe_interaction_send(
+        interaction,
+        content=f"🛡️ Moderacja czata jest teraz **{chat_moderation_status_text(interaction.guild.id)}**.",
+        ephemeral=True
+    )
+
 
 @bot.tree.command(name="warny", description="Pokazuje liczbę warnów użytkownika")
 async def warny(interaction: discord.Interaction):
