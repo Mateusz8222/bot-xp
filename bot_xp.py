@@ -23,6 +23,7 @@ POINTS_CHANNEL_ID = 1490629053286191206      # 📊・sprawdz-punkty
 RANKING_CHANNEL_ID = 1490629324305600594     # 🏆・ranking
 XPINFO_CHANNEL_ID = 1490629632796524554      # 📘・info-xp
 SHOP_CHANNEL_ID = 1490648124006338640        # 🛒・sklep
+BETTING_CHANNEL_ID = 1487496845176606821     # 🤑・obstawianie-meczy
 
 LEGEND_TEXT_CHANNEL_ID = 1490791025671803013 # 💎・legenda-czat
 LEGEND_VC_CHANNEL_ID = 1490792255504646407   # 💎・Legenda VC
@@ -394,6 +395,7 @@ PANEL_CHANNELS = {
     "ranking": RANKING_CHANNEL_ID,
     "xpinfo": XPINFO_CHANNEL_ID,
     "shop": SHOP_CHANNEL_ID,
+    "betting": BETTING_CHANNEL_ID,
 }
 
 # =========================================================
@@ -1437,6 +1439,187 @@ def my_bets_embed(rows: list[dict]) -> discord.Embed:
     return embed
 
 
+def betting_panel_embed(guild: discord.Guild) -> discord.Embed:
+    rows = list_betting_matches(guild.id, status="open", limit=10)
+    embed = discord.Embed(
+        title="🤑 Obstawianie meczy",
+        description="Kliknij przyciski lub wybierz mecz z listy poniżej.",
+        color=discord.Color.green(),
+    )
+    embed.add_field(name="Minimalna stawka", value=f"{BETTING_MIN_STAKE} pkt", inline=True)
+    embed.add_field(name="Kanał", value=f"<#{BETTING_CHANNEL_ID}>", inline=True)
+
+    if not rows:
+        embed.add_field(name="Otwarte mecze", value="Aktualnie brak otwartych meczów do obstawiania.", inline=False)
+        return embed
+
+    lines = []
+    for row in rows[:10]:
+        lines.append(
+            f"**#{row['match_id']}** | {row['home_team']} vs {row['away_team']}\n"
+            f"Start: <t:{int(row['start_ts'])}:R> | Kursy: **1 {float(row['odds_home']):.2f} / X {float(row['odds_draw']):.2f} / 2 {float(row['odds_away']):.2f}**"
+        )
+    embed.add_field(name="Otwarte mecze", value="\n\n".join(lines), inline=False)
+    embed.set_footer(text="Panel aktualizuje się automatycznie.")
+    return embed
+
+
+class BetStakeModal(discord.ui.Modal, title="🎯 Postaw zakład"):
+    stake = discord.ui.TextInput(label="Stawka w punktach", placeholder="Np. 100", required=True, max_length=10)
+
+    def __init__(self, match_id: int, pick: str):
+        super().__init__()
+        self.match_id = int(match_id)
+        self.pick = pick
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if interaction.guild is None:
+            await safe_interaction_send(interaction, content="Ta akcja działa tylko na serwerze.", ephemeral=True)
+            return
+
+        try:
+            stake_value = int(str(self.stake).strip())
+        except ValueError:
+            await safe_interaction_send(interaction, content="❌ Stawka musi być liczbą całkowitą.", ephemeral=True)
+            return
+
+        if stake_value < BETTING_MIN_STAKE:
+            await safe_interaction_send(interaction, content=f"❌ Minimalna stawka to {BETTING_MIN_STAKE} pkt.", ephemeral=True)
+            return
+
+        match_row = get_betting_match(interaction.guild.id, self.match_id)
+        if not match_row:
+            await safe_interaction_send(interaction, content="❌ Nie znaleziono meczu.", ephemeral=True)
+            return
+
+        if match_row["status"] != "open":
+            await safe_interaction_send(interaction, content="❌ Ten mecz nie jest już otwarty do obstawiania.", ephemeral=True)
+            return
+
+        if int(match_row["start_ts"]) <= int(time.time()):
+            await safe_interaction_send(interaction, content="❌ Czas obstawiania minął.", ephemeral=True)
+            return
+
+        existing_bet = get_user_bet(interaction.guild.id, self.match_id, interaction.user.id)
+        if existing_bet:
+            await safe_interaction_send(interaction, content="❌ Już obstawiłeś ten mecz.", ephemeral=True)
+            return
+
+        points_row = get_points_row(interaction.guild.id, interaction.user.id)
+        total_points = int(points_row["total_points"]) if points_row else 0
+        if total_points < stake_value:
+            await safe_interaction_send(interaction, content="❌ Nie masz tyle punktów.", ephemeral=True)
+            return
+
+        odds = get_bet_odds_for_pick(match_row, self.pick)
+        potential_win = int(round(stake_value * odds))
+
+        inserted = place_bet(interaction.guild.id, self.match_id, interaction.user.id, self.pick, stake_value, potential_win)
+        if not inserted:
+            await safe_interaction_send(interaction, content="❌ Nie udało się zapisać zakładu.", ephemeral=True)
+            return
+
+        remove_total_points(interaction.guild.id, interaction.user.id, stake_value)
+        embed = discord.Embed(title="✅ Zakład przyjęty", color=discord.Color.green())
+        embed.add_field(name="Mecz", value=f"#{self.match_id} | {match_row['home_team']} vs {match_row['away_team']}", inline=False)
+        embed.add_field(name="Typ", value=self.pick, inline=True)
+        embed.add_field(name="Stawka", value=f"{stake_value} pkt", inline=True)
+        embed.add_field(name="Możliwa wygrana", value=f"{potential_win} pkt", inline=True)
+        await safe_interaction_send(interaction, embed=embed, ephemeral=True)
+        await refresh_betting_panel(interaction.guild)
+
+
+class BettingPickView(discord.ui.View):
+    def __init__(self, match_id: int):
+        super().__init__(timeout=180)
+        self.match_id = int(match_id)
+
+    @discord.ui.button(label="1", style=discord.ButtonStyle.success)
+    async def pick_home(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(BetStakeModal(self.match_id, "1"))
+
+    @discord.ui.button(label="X", style=discord.ButtonStyle.secondary)
+    async def pick_draw(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(BetStakeModal(self.match_id, "X"))
+
+    @discord.ui.button(label="2", style=discord.ButtonStyle.danger)
+    async def pick_away(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(BetStakeModal(self.match_id, "2"))
+
+
+class BettingMatchSelect(discord.ui.Select):
+    def __init__(self, guild_id: int):
+        rows = list_betting_matches(guild_id, status="open", limit=25)
+        options = []
+
+        if rows:
+            for row in rows[:25]:
+                label = f"#{row['match_id']} {row['home_team']} vs {row['away_team']}"
+                description = f"Start {datetime.fromtimestamp(int(row['start_ts']), tz=timezone.utc).strftime('%d.%m %H:%M')} UTC | 1:{float(row['odds_home']):.2f} X:{float(row['odds_draw']):.2f} 2:{float(row['odds_away']):.2f}"
+                options.append(discord.SelectOption(label=label[:100], description=description[:100], value=str(row['match_id'])))
+
+        if not options:
+            options.append(discord.SelectOption(label="Brak otwartych meczów", value="none"))
+
+        super().__init__(
+            placeholder="Wybierz mecz do obstawienia",
+            min_values=1,
+            max_values=1,
+            options=options,
+            custom_id=f"betting_match_select_{guild_id}",
+            disabled=(len(rows) == 0),
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        if self.values[0] == "none":
+            await safe_interaction_send(interaction, content="❌ Aktualnie brak otwartych meczów.", ephemeral=True)
+            return
+
+        match_id = int(self.values[0])
+        match_row = get_betting_match(interaction.guild.id, match_id)
+        if not match_row:
+            await safe_interaction_send(interaction, content="❌ Nie znaleziono meczu.", ephemeral=True)
+            return
+
+        embed = betting_match_embed(match_row)
+        embed.add_field(name="Jak obstawić", value="Kliknij 1, X albo 2 i podaj stawkę w punktach.", inline=False)
+        await safe_interaction_send(interaction, embed=embed, view=BettingPickView(match_id), ephemeral=True)
+
+
+class BettingPanelView(discord.ui.View):
+    def __init__(self, guild_id: int):
+        super().__init__(timeout=None)
+        self.add_item(BettingMatchSelect(guild_id))
+
+    @discord.ui.button(label="🔄 Odśwież", style=discord.ButtonStyle.primary, row=1, custom_id="betting_refresh")
+    async def refresh_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.guild is None:
+            await safe_interaction_send(interaction, content="Ta akcja działa tylko na serwerze.", ephemeral=True)
+            return
+        await refresh_betting_panel(interaction.guild)
+        await safe_interaction_send(interaction, content="✅ Panel obstawiania został odświeżony.", ephemeral=True)
+
+    @discord.ui.button(label="🎯 Moje typy", style=discord.ButtonStyle.secondary, row=1, custom_id="betting_my_bets")
+    async def my_bets_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.guild is None:
+            await safe_interaction_send(interaction, content="Ta akcja działa tylko na serwerze.", ephemeral=True)
+            return
+        rows = list_user_bets(interaction.guild.id, interaction.user.id, limit=20)
+        await safe_interaction_send(interaction, embed=my_bets_embed(rows), ephemeral=True)
+
+    @discord.ui.button(label="📋 Lista meczów", style=discord.ButtonStyle.secondary, row=1, custom_id="betting_list")
+    async def list_matches_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.guild is None:
+            await safe_interaction_send(interaction, content="Ta akcja działa tylko na serwerze.", ephemeral=True)
+            return
+        rows = list_betting_matches(interaction.guild.id, status="open", limit=20)
+        await safe_interaction_send(interaction, embed=betting_list_embed(rows), ephemeral=True)
+
+
+async def refresh_betting_panel(guild: discord.Guild) -> None:
+    await ensure_panel_message(guild, "betting", betting_panel_embed(guild), BettingPanelView(guild.id))
+
+
 
 # =========================================================
 # BOT
@@ -1458,6 +1641,7 @@ class XPBot(commands.Bot):
         self.add_view(RankingView(self))
         self.add_view(XpInfoView(self))
         self.add_view(ChatModerationPanelView())
+        # widok obstawiania dla aktywnego serwera odświeża się przez panel
 
 bot = XPBot()
 
@@ -1672,6 +1856,7 @@ def xpinfo_embed() -> discord.Embed:
     embed.add_field(name="🛡️ System kar", value=f"AutoMod daje warny. 1 = ostrzeżenie, 10 = kick, 20 = ban. Co {AUTOMOD_WARN_DECAY_HOURS}h bez przewinień schodzi 1 warn.", inline=False)
     embed.add_field(name="🔗 Linki", value="Discord invite = natychmiastowy ban. TikTok / YouTube / Kick / skrócone linki = usunięcie + warn.", inline=False)
     embed.add_field(name="⚙️ Panel moderacji", value="Użyj `/panel_moderacji`, `/moderacja_on`, `/moderacja_off`, `/status_moderacji`.", inline=False)
+    embed.add_field(name="🎯 Obstawianie", value=f"Panel meczów działa w <#{BETTING_CHANNEL_ID}>. Użyj `/panel_obstawiania`.", inline=False)
     embed.add_field(name="❌ Punkty VC nie lecą gdy", value="bot / mute / deaf / kanał AFK", inline=False)
     return embed
 
@@ -1805,9 +1990,10 @@ async def ensure_panel_message(
 
 async def refresh_all_panels(guild: discord.Guild) -> None:
     await ensure_panel_message(guild, "points", points_panel_embed(), PointsView(bot))
-    await ensure_panel_message(guild, "ranking", ranking_panel_embed(), RankingView(bot))
-    await ensure_panel_message(guild, "xpinfo", xpinfo_panel_embed(), XpInfoView(bot))
+    await ensure_panel_message(guild, "ranking", ranking_embed(guild), RankingView(bot))
+    await ensure_panel_message(guild, "xpinfo", xpinfo_embed(), XpInfoView(bot))
     await ensure_panel_message(guild, "shop", shop_embed(), ShopView(bot))
+    await ensure_panel_message(guild, "betting", betting_panel_embed(guild), BettingPanelView(guild.id))
 
 async def process_shop_purchase(interaction: discord.Interaction, item_name: str) -> None:
     if interaction.guild is None:
@@ -2465,6 +2651,8 @@ async def on_ready():
 
     if not vc_loop.is_running():
         vc_loop.start()
+    if not betting_panel_loop.is_running():
+        betting_panel_loop.start()
 
     try:
         synced = await bot.tree.sync()
@@ -2475,6 +2663,15 @@ async def on_ready():
 # =========================================================
 # VC LOOP
 # =========================================================
+@tasks.loop(minutes=2)
+async def betting_panel_loop():
+    for guild in bot.guilds:
+        try:
+            await refresh_betting_panel(guild)
+        except Exception:
+            pass
+
+
 @tasks.loop(seconds=10)
 async def vc_loop():
     now = time.time()
@@ -2698,6 +2895,21 @@ async def reset_warnow(interaction: discord.Interaction, uzytkownik: discord.Mem
 
 
 
+@bot.tree.command(name="panel_obstawiania", description="Wysyła lub odświeża panel obstawiania meczy")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def panel_obstawiania(interaction: discord.Interaction):
+    if interaction.guild is None:
+        await safe_interaction_send(interaction, content="Ta komenda działa tylko na serwerze.", ephemeral=True)
+        return
+
+    if interaction.channel_id != BETTING_CHANNEL_ID:
+        await safe_interaction_send(interaction, content=f"❌ Panel obstawiania ustawiaj tylko w kanale <#{BETTING_CHANNEL_ID}>.", ephemeral=True)
+        return
+
+    await refresh_betting_panel(interaction.guild)
+    await safe_interaction_send(interaction, content="✅ Panel obstawiania został ustawiony / odświeżony.", ephemeral=True)
+
+
 @bot.tree.command(name="dodaj_mecz", description="Dodaje mecz do obstawiania")
 @app_commands.checks.has_permissions(manage_guild=True)
 @app_commands.describe(
@@ -2780,6 +2992,10 @@ async def obstaw(interaction: discord.Interaction, mecz_id: int, typ: str, stawk
         await safe_interaction_send(interaction, content="Ta komenda działa tylko na serwerze.", ephemeral=True)
         return
 
+    if interaction.channel_id != BETTING_CHANNEL_ID:
+        await safe_interaction_send(interaction, content=f"❌ Obstawianie działa tylko w kanale <#{BETTING_CHANNEL_ID}>.", ephemeral=True)
+        return
+
     pick = typ.upper().strip()
     if pick not in {"1", "X", "2"}:
         await safe_interaction_send(interaction, content="❌ Typ musi być: 1, X albo 2.", ephemeral=True)
@@ -2829,6 +3045,7 @@ async def obstaw(interaction: discord.Interaction, mecz_id: int, typ: str, stawk
     embed.add_field(name="Stawka", value=f"{stawka} pkt", inline=True)
     embed.add_field(name="Możliwa wygrana", value=f"{potential_win} pkt", inline=True)
     await safe_interaction_send(interaction, embed=embed, ephemeral=True)
+    await refresh_betting_panel(interaction.guild)
 
 
 @bot.tree.command(name="moje_typy", description="Pokazuje Twoje obstawione mecze")
@@ -2856,6 +3073,7 @@ async def zamknij_obstawianie(interaction: discord.Interaction, mecz_id: int):
 
     match_row = get_betting_match(interaction.guild.id, mecz_id)
     await safe_interaction_send(interaction, embed=betting_match_embed(match_row), ephemeral=False)
+    await refresh_betting_panel(interaction.guild)
 
 
 @bot.tree.command(name="wynik_meczu", description="Rozlicza mecz i wypłaca wygrane")
@@ -2881,6 +3099,7 @@ async def wynik_meczu(interaction: discord.Interaction, mecz_id: int, wynik: str
     embed = betting_match_embed(match_row)
     embed.add_field(name="Rozliczenie", value=f"Wynik: **{result}**\nWygrani: **{winners}**\nWypłacono: **{total_paid} pkt**", inline=False)
     await safe_interaction_send(interaction, embed=embed, ephemeral=False)
+    await refresh_betting_panel(interaction.guild)
 
 @bot.tree.command(name="odswiez_panele", description="Odświeża wszystkie panele bota")
 @app_commands.checks.has_permissions(manage_guild=True)
