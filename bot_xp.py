@@ -2,9 +2,12 @@ import os
 import random
 import time
 import re
+import json
 import unicodedata
 from datetime import datetime, timezone, timedelta
 from typing import Optional
+from urllib.request import Request, urlopen
+from urllib.error import URLError, HTTPError
 
 import discord
 from discord import app_commands
@@ -15,6 +18,16 @@ from discord.ext import commands, tasks
 # =========================================================
 TOKEN = os.getenv("TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
+
+FOOTBALL_DATA_API_KEY = os.getenv("FOOTBALL_DATA_API_KEY", "")
+FOOTBALL_DATA_COMPETITIONS = [c.strip().upper() for c in os.getenv("FOOTBALL_DATA_COMPETITIONS", "PL,PD,BL1,SA,CL").split(",") if c.strip()]
+AUTO_FETCH_MATCHES_ENABLED = os.getenv("AUTO_FETCH_MATCHES_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
+AUTO_FETCH_LOOKAHEAD_DAYS = int(os.getenv("AUTO_FETCH_LOOKAHEAD_DAYS", "3"))
+AUTO_FETCH_INTERVAL_MINUTES = int(os.getenv("AUTO_FETCH_INTERVAL_MINUTES", "15"))
+
+AUTO_DEFAULT_ODDS_HOME = float(os.getenv("AUTO_DEFAULT_ODDS_HOME", "2.20"))
+AUTO_DEFAULT_ODDS_DRAW = float(os.getenv("AUTO_DEFAULT_ODDS_DRAW", "3.20"))
+AUTO_DEFAULT_ODDS_AWAY = float(os.getenv("AUTO_DEFAULT_ODDS_AWAY", "2.20"))
 
 # =========================================================
 # ID KANAŁÓW
@@ -604,6 +617,51 @@ def init_db() -> None:
 
     conn.commit()
     conn.close()
+    ensure_betting_schema_migrations()
+
+
+def ensure_betting_schema_migrations() -> None:
+    conn = db_connect()
+    cur = conn.cursor()
+
+    if USING_POSTGRES:
+        cur.execute("ALTER TABLE betting_matches ADD COLUMN IF NOT EXISTS source TEXT DEFAULT 'manual'")
+        cur.execute("ALTER TABLE betting_matches ADD COLUMN IF NOT EXISTS external_id TEXT")
+        cur.execute("ALTER TABLE betting_matches ADD COLUMN IF NOT EXISTS auto_created INTEGER DEFAULT 0")
+        cur.execute("ALTER TABLE betting_matches ADD COLUMN IF NOT EXISTS competition_code TEXT")
+        cur.execute("ALTER TABLE betting_matches ADD COLUMN IF NOT EXISTS competition_name TEXT")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_betting_matches_guild_external ON betting_matches (guild_id, external_id)")
+    else:
+        cur.execute("PRAGMA table_info(betting_matches)")
+        cols = {row[1] for row in cur.fetchall()}
+        if "source" not in cols:
+            cur.execute("ALTER TABLE betting_matches ADD COLUMN source TEXT DEFAULT 'manual'")
+        if "external_id" not in cols:
+            cur.execute("ALTER TABLE betting_matches ADD COLUMN external_id TEXT")
+        if "auto_created" not in cols:
+            cur.execute("ALTER TABLE betting_matches ADD COLUMN auto_created INTEGER DEFAULT 0")
+        if "competition_code" not in cols:
+            cur.execute("ALTER TABLE betting_matches ADD COLUMN competition_code TEXT")
+        if "competition_name" not in cols:
+            cur.execute("ALTER TABLE betting_matches ADD COLUMN competition_name TEXT")
+
+    conn.commit()
+    conn.close()
+
+
+def get_match_by_external_id(guild_id: int, external_id: str) -> dict | None:
+    conn = db_connect()
+    cur = conn.cursor()
+    cur.execute(sql("""
+        SELECT *
+        FROM betting_matches
+        WHERE guild_id = ? AND external_id = ?
+        LIMIT 1
+    """), (guild_id, external_id))
+    row = fetchone_dict(cur)
+    conn.close()
+    return row
+
 
 def ensure_user_row(guild_id: int, user_id: int) -> None:
     conn = db_connect()
@@ -1168,6 +1226,218 @@ def contains_shortened_link(content: str) -> bool:
     return any(keyword in text for keyword in AUTOMOD_SHORTENER_KEYWORDS)
 
 
+
+def normalize_api_result_to_pick(winner: str | None) -> str | None:
+    if winner == "HOME_TEAM":
+        return "1"
+    if winner == "DRAW":
+        return "X"
+    if winner == "AWAY_TEAM":
+        return "2"
+    return None
+
+
+def map_api_status_to_local(status: str, start_ts: int) -> str:
+    now_ts = int(time.time())
+    status = (status or "").upper()
+
+    if status in {"FINISHED", "AWARDED"}:
+        return "settled"
+    if status in {"IN_PLAY", "PAUSED", "LIVE", "SUSPENDED"}:
+        return "closed"
+    if start_ts <= now_ts:
+        return "closed"
+    return "open"
+
+
+def fetch_remote_json(url: str, headers: dict[str, str]) -> dict:
+    req = Request(url, headers=headers)
+    with urlopen(req, timeout=20) as response:
+        payload = response.read().decode("utf-8")
+    return json.loads(payload)
+
+
+def fetch_football_data_matches_for_competition(competition_code: str, date_from: str, date_to: str) -> list[dict]:
+    if not FOOTBALL_DATA_API_KEY:
+        return []
+
+    url = f"https://api.football-data.org/v4/competitions/{competition_code}/matches?dateFrom={date_from}&dateTo={date_to}"
+    data = fetch_remote_json(url, {"X-Auth-Token": FOOTBALL_DATA_API_KEY})
+    return data.get("matches", [])
+
+
+def create_auto_betting_match(
+    guild_id: int,
+    external_id: str,
+    home_team: str,
+    away_team: str,
+    start_ts: int,
+    competition_code: str,
+    competition_name: str,
+) -> int:
+    conn = db_connect()
+    cur = conn.cursor()
+    now_ts = int(time.time())
+
+    if USING_POSTGRES:
+        cur.execute("""
+            INSERT INTO betting_matches (
+                guild_id, home_team, away_team, start_ts,
+                odds_home, odds_draw, odds_away,
+                status, result, created_by, created_at,
+                source, external_id, auto_created, competition_code, competition_name
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, 'open', NULL, %s, %s, %s, %s, %s, %s, %s)
+            RETURNING match_id
+        """, (
+            guild_id, home_team, away_team, int(start_ts),
+            AUTO_DEFAULT_ODDS_HOME, AUTO_DEFAULT_ODDS_DRAW, AUTO_DEFAULT_ODDS_AWAY,
+            0, now_ts, "football-data", external_id, 1, competition_code, competition_name
+        ))
+        row = cur.fetchone()
+        match_id = int(row["match_id"]) if isinstance(row, dict) else int(row[0])
+    else:
+        cur.execute("""
+            INSERT INTO betting_matches (
+                guild_id, home_team, away_team, start_ts,
+                odds_home, odds_draw, odds_away,
+                status, result, created_by, created_at,
+                source, external_id, auto_created, competition_code, competition_name
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'open', NULL, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            guild_id, home_team, away_team, int(start_ts),
+            AUTO_DEFAULT_ODDS_HOME, AUTO_DEFAULT_ODDS_DRAW, AUTO_DEFAULT_ODDS_AWAY,
+            0, now_ts, "football-data", external_id, 1, competition_code, competition_name
+        ))
+        match_id = int(cur.lastrowid)
+
+    conn.commit()
+    conn.close()
+    return match_id
+
+
+def update_auto_betting_match(
+    guild_id: int,
+    match_id: int,
+    home_team: str,
+    away_team: str,
+    start_ts: int,
+    competition_code: str,
+    competition_name: str,
+    local_status: str,
+) -> None:
+    conn = db_connect()
+    cur = conn.cursor()
+    cur.execute(sql("""
+        UPDATE betting_matches
+        SET home_team = ?,
+            away_team = ?,
+            start_ts = ?,
+            competition_code = ?,
+            competition_name = ?,
+            status = CASE
+                WHEN status = 'settled' THEN status
+                ELSE ?
+            END
+        WHERE guild_id = ? AND match_id = ?
+    """), (
+        home_team, away_team, int(start_ts), competition_code, competition_name, local_status, guild_id, match_id
+    ))
+    conn.commit()
+    conn.close()
+
+
+def sync_auto_matches_for_guild(guild: discord.Guild) -> tuple[int, int]:
+    if not FOOTBALL_DATA_API_KEY or not AUTO_FETCH_MATCHES_ENABLED:
+        return (0, 0)
+
+    today = datetime.now(timezone.utc).date()
+    date_from = today.isoformat()
+    date_to = (today + timedelta(days=AUTO_FETCH_LOOKAHEAD_DAYS)).isoformat()
+
+    created = 0
+    updated = 0
+
+    for competition_code in FOOTBALL_DATA_COMPETITIONS:
+        try:
+            matches = fetch_football_data_matches_for_competition(competition_code, date_from, date_to)
+        except (HTTPError, URLError, TimeoutError, ValueError, json.JSONDecodeError):
+            continue
+        except Exception:
+            continue
+
+        for item in matches:
+            ext_id = f"fd:{item.get('id')}"
+            home = ((item.get("homeTeam") or {}).get("shortName")
+                    or (item.get("homeTeam") or {}).get("name")
+                    or "Gospodarze")
+            away = ((item.get("awayTeam") or {}).get("shortName")
+                    or (item.get("awayTeam") or {}).get("name")
+                    or "Goście")
+            utc_date = item.get("utcDate")
+            if not utc_date:
+                continue
+
+            try:
+                start_dt = datetime.fromisoformat(utc_date.replace("Z", "+00:00"))
+                start_ts = int(start_dt.timestamp())
+            except Exception:
+                continue
+
+            competition_name = ((item.get("competition") or {}).get("name") or competition_code)
+            api_status = (item.get("status") or "").upper()
+            local_status = map_api_status_to_local(api_status, start_ts)
+
+            existing = get_match_by_external_id(guild.id, ext_id)
+            if existing is None:
+                if local_status == "settled":
+                    continue
+                create_auto_betting_match(
+                    guild.id,
+                    ext_id,
+                    home,
+                    away,
+                    start_ts,
+                    competition_code,
+                    competition_name,
+                )
+                created += 1
+                existing = get_match_by_external_id(guild.id, ext_id)
+            else:
+                update_auto_betting_match(
+                    guild.id,
+                    int(existing["match_id"]),
+                    home,
+                    away,
+                    start_ts,
+                    competition_code,
+                    competition_name,
+                    local_status,
+                )
+                updated += 1
+                existing = get_betting_match(guild.id, int(existing["match_id"]))
+
+            if existing is None:
+                continue
+
+            result_pick = normalize_api_result_to_pick(((item.get("score") or {}).get("winner")))
+            if api_status in {"FINISHED", "AWARDED"} and result_pick and existing["status"] != "settled":
+                try:
+                    settle_betting_match(guild.id, int(existing["match_id"]), result_pick)
+                    updated += 1
+                except Exception:
+                    pass
+            elif local_status == "closed" and existing["status"] == "open":
+                try:
+                    close_betting_match(guild.id, int(existing["match_id"]))
+                    updated += 1
+                except Exception:
+                    pass
+
+    return created, updated
+
+
 def get_bet_odds_for_pick(match_row: dict, pick: str) -> float:
     if pick == "1":
         return float(match_row["odds_home"])
@@ -1457,7 +1727,8 @@ def betting_panel_embed(guild: discord.Guild) -> discord.Embed:
     for row in rows[:10]:
         lines.append(
             f"**#{row['match_id']}** | {row['home_team']} vs {row['away_team']}\n"
-            f"Start: <t:{int(row['start_ts'])}:R> | Kursy: **1 {float(row['odds_home']):.2f} / X {float(row['odds_draw']):.2f} / 2 {float(row['odds_away']):.2f}**"
+            f"Liga: **{row.get('competition_name') or row.get('competition_code') or 'Ręczny mecz'}** | Start: <t:{int(row['start_ts'])}:R>\n"
+            f"Kursy: **1 {float(row['odds_home']):.2f} / X {float(row['odds_draw']):.2f} / 2 {float(row['odds_away']):.2f}**"
         )
     embed.add_field(name="Otwarte mecze", value="\n\n".join(lines), inline=False)
     embed.set_footer(text="Panel aktualizuje się automatycznie.")
@@ -1857,6 +2128,7 @@ def xpinfo_embed() -> discord.Embed:
     embed.add_field(name="🔗 Linki", value="Discord invite = natychmiastowy ban. TikTok / YouTube / Kick / skrócone linki = usunięcie + warn.", inline=False)
     embed.add_field(name="⚙️ Panel moderacji", value="Użyj `/panel_moderacji`, `/moderacja_on`, `/moderacja_off`, `/status_moderacji`.", inline=False)
     embed.add_field(name="🎯 Obstawianie", value=f"Panel meczów działa w <#{BETTING_CHANNEL_ID}>. Użyj `/panel_obstawiania`.", inline=False)
+    embed.add_field(name="⚙️ Auto import meczów", value="Ustaw `FOOTBALL_DATA_API_KEY` oraz opcjonalnie `FOOTBALL_DATA_COMPETITIONS`, potem użyj `/sync_mecze_auto`.", inline=False)
     embed.add_field(name="❌ Punkty VC nie lecą gdy", value="bot / mute / deaf / kanał AFK", inline=False)
     return embed
 
@@ -2643,6 +2915,11 @@ async def on_ready():
             if is_active_for_vc(member):
                 bot.vc_active_since[(guild.id, member.id)] = time.time()
 
+        if AUTO_FETCH_MATCHES_ENABLED and FOOTBALL_DATA_API_KEY:
+            try:
+                sync_auto_matches_for_guild(guild)
+            except Exception:
+                pass
         await refresh_all_panels(guild)
 
         admin_log_channel = guild.get_channel(ADMIN_LOG_CHANNEL_ID)
@@ -2653,6 +2930,8 @@ async def on_ready():
         vc_loop.start()
     if not betting_panel_loop.is_running():
         betting_panel_loop.start()
+    if not auto_fetch_matches_loop.is_running():
+        auto_fetch_matches_loop.start()
 
     try:
         synced = await bot.tree.sync()
@@ -2663,6 +2942,24 @@ async def on_ready():
 # =========================================================
 # VC LOOP
 # =========================================================
+@tasks.loop(minutes=AUTO_FETCH_INTERVAL_MINUTES)
+async def auto_fetch_matches_loop():
+    if not AUTO_FETCH_MATCHES_ENABLED or not FOOTBALL_DATA_API_KEY:
+        return
+
+    for guild in bot.guilds:
+        try:
+            sync_auto_matches_for_guild(guild)
+            await refresh_betting_panel(guild)
+        except Exception:
+            pass
+
+
+@auto_fetch_matches_loop.before_loop
+async def before_auto_fetch_matches_loop():
+    await bot.wait_until_ready()
+
+
 @tasks.loop(minutes=2)
 async def betting_panel_loop():
     for guild in bot.guilds:
@@ -2893,6 +3190,26 @@ async def reset_warnow(interaction: discord.Interaction, uzytkownik: discord.Mem
     clear_automod_warnings(interaction.guild.id, uzytkownik.id)
     await safe_interaction_send(interaction, content=f"✅ Zresetowano warny użytkownika {uzytkownik.mention}.", ephemeral=True)
 
+
+
+@bot.tree.command(name="sync_mecze_auto", description="Ręcznie pobiera bieżące mecze do panelu obstawiania")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def sync_mecze_auto(interaction: discord.Interaction):
+    if interaction.guild is None:
+        await safe_interaction_send(interaction, content="Ta komenda działa tylko na serwerze.", ephemeral=True)
+        return
+
+    if not FOOTBALL_DATA_API_KEY:
+        await safe_interaction_send(interaction, content="❌ Brak ustawionego FOOTBALL_DATA_API_KEY w zmiennych środowiskowych.", ephemeral=True)
+        return
+
+    created, updated = sync_auto_matches_for_guild(interaction.guild)
+    await refresh_betting_panel(interaction.guild)
+    await safe_interaction_send(
+        interaction,
+        content=f"✅ Synchronizacja zakończona. Dodano: **{created}**, zaktualizowano / zamknięto / rozliczono: **{updated}**.",
+        ephemeral=True
+    )
 
 
 @bot.tree.command(name="panel_obstawiania", description="Wysyła lub odświeża panel obstawiania meczy")
