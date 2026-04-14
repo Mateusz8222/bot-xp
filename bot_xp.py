@@ -2020,10 +2020,8 @@ def betting_panel_embed(guild: discord.Guild) -> discord.Embed:
     lines = []
     for row in rows[:10]:
         lines.append(
-            f"**#{row['match_id']}** | {row['home_team']} vs {row['away_team']}
-"
-            f"Liga: **{row.get('competition_name') or row.get('competition_code') or 'Ręczny mecz'}** | Start: <t:{int(row['start_ts'])}:R>
-"
+            f"**#{row['match_id']}** | {row['home_team']} vs {row['away_team']}\n"
+            f"Liga: **{row.get('competition_name') or row.get('competition_code') or 'Ręczny mecz'}** | Start: <t:{int(row['start_ts'])}:R>\n"
             f"Kursy: **1 {float(row['odds_home']):.2f} / X {float(row['odds_draw']):.2f} / 2 {float(row['odds_away']):.2f}**"
         )
     embed.add_field(name="Otwarte mecze", value="
@@ -2056,10 +2054,8 @@ def typer_ranking_embed(guild: discord.Guild) -> discord.Embed:
         roi = (((total_won - total_staked) / total_staked) * 100.0) if total_staked > 0 else 0.0
 
         lines.append(
-            f"**{pos}. {member.display_name}**
-"
-            f"Zakłady: **{total_bets}** | Winrate: **{hit_rate:.1f}%** | ROI: **{roi:.1f}%**
-"
+            f"**{pos}. {member.display_name}**\n"
+            f"Zakłady: **{total_bets}** | Winrate: **{hit_rate:.1f}%** | ROI: **{roi:.1f}%**\n"
             f"Wygrane: **{wins}** | Przegrane: **{losses}** | Seria: **{int(row['best_streak'])}**"
         )
         pos += 1
@@ -2118,8 +2114,7 @@ def live_results_embed(guild: discord.Guild) -> discord.Embed:
     lines = []
     for row in live_rows[:LIVE_RESULTS_LIMIT]:
         lines.append(
-            f"**#{row['match_id']}** | {row['home_team']} {int(row.get('home_score') or 0)}:{int(row.get('away_score') or 0)} {row['away_team']}
-"
+            f"**#{row['match_id']}** | {row['home_team']} {int(row.get('home_score') or 0)}:{int(row.get('away_score') or 0)} {row['away_team']}\n"
             f"Live: **{row.get('live_status') or row['status']}** | Liga: **{row.get('competition_name') or row.get('competition_code') or 'brak'}**"
         )
 
@@ -2127,8 +2122,7 @@ def live_results_embed(guild: discord.Guild) -> discord.Embed:
         soon = [r for r in rows if r["status"] == "open" and int(r["start_ts"]) >= now_ts]
         for row in soon[:LIVE_RESULTS_LIMIT]:
             lines.append(
-                f"**#{row['match_id']}** | {row['home_team']} vs {row['away_team']}
-"
+                f"**#{row['match_id']}** | {row['home_team']} vs {row['away_team']}\n"
                 f"Start: <t:{int(row['start_ts'])}:R> | Liga: **{row.get('competition_name') or row.get('competition_code') or 'brak'}**"
             )
 
