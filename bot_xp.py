@@ -2024,7 +2024,7 @@ def betting_panel_embed(guild: discord.Guild) -> discord.Embed:
             f"Kursy: **1 {float(row['odds_home']):.2f} / X {float(row['odds_draw']):.2f} / 2 {float(row['odds_away']):.2f}**"
         )
     embed.add_field(name="Otwarte mecze", value="\n\n".join(lines), inline=False)
-    embed.set_footer(text="Panel aktualizuje się automatycznie.")
+    embed.set_footer(text="Panel aktualizuje się automatycznie rzadziej, aby uniknąć limitów Discorda.")
     return embed
 
 
@@ -2196,8 +2196,6 @@ class BetStakeModal(discord.ui.Modal, title="🎯 Postaw zakład"):
         embed.add_field(name="Stawka", value=f"{stake_value} pkt", inline=True)
         embed.add_field(name="Możliwa wygrana", value=f"{potential_win} pkt", inline=True)
         await safe_interaction_send(interaction, embed=embed, ephemeral=True)
-        await refresh_betting_panel(interaction.guild)
-        await refresh_live_results_panel(interaction.guild)
 
 
 class BettingPickView(discord.ui.View):
@@ -2294,12 +2292,28 @@ class BettingPanelView(discord.ui.View):
         await safe_interaction_send(interaction, embed=live_results_embed(interaction.guild), ephemeral=True)
 
 
-async def refresh_betting_panel(guild: discord.Guild) -> None:
+async def refresh_betting_panel(guild: discord.Guild, *, force: bool = False) -> None:
+    now_ts = time.time()
+    cache_key = (guild.id, "betting")
+    last_ts = bot.panel_refresh_cache.get(cache_key, 0.0)
+
+    if not force and now_ts - last_ts < BETTING_PANEL_REFRESH_SECONDS:
+        return
+
     await ensure_panel_message(guild, "betting", betting_panel_embed(guild), BettingPanelView(guild.id))
+    bot.panel_refresh_cache[cache_key] = now_ts
 
 
-async def refresh_live_results_panel(guild: discord.Guild) -> None:
+async def refresh_live_results_panel(guild: discord.Guild, *, force: bool = False) -> None:
+    now_ts = time.time()
+    cache_key = (guild.id, "betting_live")
+    last_ts = bot.panel_refresh_cache.get(cache_key, 0.0)
+
+    if not force and now_ts - last_ts < BETTING_LIVE_REFRESH_SECONDS:
+        return
+
     await ensure_panel_message(guild, "betting_live", live_results_embed(guild), None)
+    bot.panel_refresh_cache[cache_key] = now_ts
 
 
 
@@ -2316,6 +2330,7 @@ class XPBot(commands.Bot):
         intents.voice_states = True
         super().__init__(command_prefix="!", intents=intents)
         self.vc_active_since: dict[tuple[int, int], float] = {}
+        self.panel_refresh_cache: dict[tuple[int, str], float] = {}
 
     async def setup_hook(self) -> None:
         self.add_view(ShopView(self))
@@ -2540,7 +2555,7 @@ def xpinfo_embed() -> discord.Embed:
     embed.add_field(name="⚙️ Panel moderacji", value="Użyj `/panel_moderacji`, `/moderacja_on`, `/moderacja_off`, `/status_moderacji`.", inline=False)
     embed.add_field(name="🎯 Obstawianie", value=f"Panel meczów działa w <#{BETTING_CHANNEL_ID}>. Użyj `/panel_obstawiania`.", inline=False)
     embed.add_field(name="⚽ Auto mecze", value="Bot może pobierać mecze z football-data.org i sam aktualizować panel. Użyj `/sync_mecze_auto`.", inline=False)
-    embed.add_field(name="🏆 Typerzy i LIVE", value="Masz `/ranking_typerow`, `/moje_staty_typerskie` i panel LIVE wyników.", inline=False)
+    embed.add_field(name="🏆 Typerzy i LIVE", value="Masz `/ranking_typerow`, `/moje_staty_typerskie` i panel LIVE wyników. Dla mniejszych limitów ustaw osobny `BETTING_LIVE_CHANNEL_ID`.", inline=False)
     embed.add_field(name="❌ Punkty VC nie lecą gdy", value="bot / mute / deaf / kanał AFK", inline=False)
     return embed
 
@@ -3376,7 +3391,7 @@ async def before_auto_fetch_matches_loop():
     await bot.wait_until_ready()
 
 
-@tasks.loop(minutes=2)
+@tasks.loop(minutes=5)
 async def betting_panel_loop():
     for guild in bot.guilds:
         try:
@@ -3622,8 +3637,8 @@ async def sync_mecze_auto(interaction: discord.Interaction):
         return
 
     created, updated = sync_auto_matches_for_guild(interaction.guild)
-    await refresh_betting_panel(interaction.guild)
-    await refresh_live_results_panel(interaction.guild)
+    await refresh_betting_panel(interaction.guild, force=True)
+    await refresh_live_results_panel(interaction.guild, force=True)
     await safe_interaction_send(
         interaction,
         content=f"✅ Synchronizacja zakończona. Dodano: **{created}**, zaktualizowano / zamknięto / rozliczono: **{updated}**.",
@@ -3653,7 +3668,7 @@ async def panel_live_mecze(interaction: discord.Interaction):
     if interaction.guild is None:
         await safe_interaction_send(interaction, content="Ta komenda działa tylko na serwerze.", ephemeral=True)
         return
-    await refresh_live_results_panel(interaction.guild)
+    await refresh_live_results_panel(interaction.guild, force=True)
     await safe_interaction_send(interaction, content="✅ Panel live wyników został odświeżony.", ephemeral=True)
 
 
