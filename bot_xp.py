@@ -2013,28 +2013,17 @@ def betting_panel_embed(guild: discord.Guild) -> discord.Embed:
     embed.add_field(name="Kanał", value=f"<#{BETTING_CHANNEL_ID}>", inline=True)
 
     if not rows:
-        embed.add_field(
-            name="Otwarte mecze",
-            value="Aktualnie brak otwartych meczów do obstawiania.",
-            inline=False
-        )
+        embed.add_field(name="Otwarte mecze", value="Aktualnie brak otwartych meczów do obstawiania.", inline=False)
         return embed
 
     lines = []
-
     for row in rows[:10]:
         lines.append(
             f"**#{row['match_id']}** | {row['home_team']} vs {row['away_team']}\n"
-            f"Liga: **{row.get('competition_name') or row.get('competition_code') or 'Ręczny mecz'}** | "
-            f"Start: <t:{int(row['start_ts'])}:R>\n"
+            f"Liga: **{row.get('competition_name') or row.get('competition_code') or 'Ręczny mecz'}** | Start: <t:{int(row['start_ts'])}:R>\n"
             f"Kursy: **1 {float(row['odds_home']):.2f} / X {float(row['odds_draw']):.2f} / 2 {float(row['odds_away']):.2f}**"
         )
-
-    embed.add_field(
-        name="Otwarte mecze",
-        value="\n\n".join(lines),
-        inline=False
-    )
+    embed.add_field(name="Otwarte mecze", value="\n\n".join(lines), inline=False)
     embed.set_footer(text="Panel aktualizuje się automatycznie.")
     return embed
 
