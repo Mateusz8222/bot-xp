@@ -731,7 +731,6 @@ def ensure_betting_schema_migrations() -> None:
 
 
 def ensure_user_row(guild_id: int, user_id: int) -> None:
-(guild_id: int, user_id: int) -> None:
     conn = db_connect()
     cur = conn.cursor()
 
@@ -2017,16 +2016,13 @@ def betting_panel_embed(guild: discord.Guild) -> discord.Embed:
         embed.add_field(name="Otwarte mecze", value="Aktualnie brak otwartych meczów do obstawiania.", inline=False)
         return embed
 
-    lines = []
     for row in rows[:10]:
         lines.append(
             f"**#{row['match_id']}** | {row['home_team']} vs {row['away_team']}\n"
             f"Liga: **{row.get('competition_name') or row.get('competition_code') or 'Ręczny mecz'}** | Start: <t:{int(row['start_ts'])}:R>\n"
             f"Kursy: **1 {float(row['odds_home']):.2f} / X {float(row['odds_draw']):.2f} / 2 {float(row['odds_away']):.2f}**"
         )
-    embed.add_field(name="Otwarte mecze", value="
-
-".join(lines), inline=False)
+    embed.add_field(name="Otwarte mecze", value="\n\n".join(lines), inline=False)
     embed.set_footer(text="Panel aktualizuje się automatycznie.")
     return embed
 
@@ -2060,9 +2056,7 @@ def typer_ranking_embed(guild: discord.Guild) -> discord.Embed:
         )
         pos += 1
 
-    embed.description = "
-
-".join(lines) if lines else "Brak statystyk typerów."
+    embed.description = "\n\n".join(lines) if lines else "Brak statystyk typerów."
     return embed
 
 
@@ -2133,12 +2127,9 @@ def live_results_embed(guild: discord.Guild) -> discord.Embed:
             tail.append(
                 f"FT | **{row['home_team']} {int(row.get('home_score') or 0)}:{int(row.get('away_score') or 0)} {row['away_team']}**"
             )
-        embed.add_field(name="Ostatnio zakończone", value="
-".join(tail), inline=False)
+        embed.add_field(name="Ostatnio zakończone", value="\n".join(tail), inline=False)
 
-    embed.description = "
-
-".join(lines) if lines else "Brak aktywnych lub nadchodzących meczów."
+    embed.description = "\n\n".join(lines) if lines else "Brak aktywnych lub nadchodzących meczów."
     return embed
 
 
@@ -2205,7 +2196,6 @@ class BetStakeModal(discord.ui.Modal, title="🎯 Postaw zakład"):
         embed.add_field(name="Możliwa wygrana", value=f"{potential_win} pkt", inline=True)
         await safe_interaction_send(interaction, embed=embed, ephemeral=True)
         await refresh_betting_panel(interaction.guild)
-    await refresh_live_results_panel(interaction.guild)
         await refresh_live_results_panel(interaction.guild)
 
 
@@ -2277,7 +2267,6 @@ class BettingPanelView(discord.ui.View):
             await safe_interaction_send(interaction, content="Ta akcja działa tylko na serwerze.", ephemeral=True)
             return
         await refresh_betting_panel(interaction.guild)
-    await refresh_live_results_panel(interaction.guild)
         await refresh_live_results_panel(interaction.guild)
         await safe_interaction_send(interaction, content="✅ Panele obstawiania zostały odświeżone.", ephemeral=True)
 
@@ -3633,7 +3622,6 @@ async def sync_mecze_auto(interaction: discord.Interaction):
 
     created, updated = sync_auto_matches_for_guild(interaction.guild)
     await refresh_betting_panel(interaction.guild)
-    await refresh_live_results_panel(interaction.guild)
     await refresh_live_results_panel(interaction.guild)
     await safe_interaction_send(
         interaction,
