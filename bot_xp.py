@@ -1,4 +1,5 @@
 import os
+import asyncio
 import random
 import time
 import re
@@ -3345,7 +3346,7 @@ async def on_ready():
 
         if AUTO_FETCH_MATCHES_ENABLED and FOOTBALL_DATA_API_KEY:
             try:
-                created, updated = sync_auto_matches_for_guild(guild)
+                created, updated = await asyncio.to_thread(sync_auto_matches_for_guild, guild)
                 print(f"⚽ Auto-sync {guild.name}: dodano {created}, zaktualizowano {updated}")
             except Exception as e:
                 print(f"⚠️ Błąd auto-sync dla {guild.name}: {e}")
@@ -3379,7 +3380,7 @@ async def auto_fetch_matches_loop():
 
     for guild in bot.guilds:
         try:
-            sync_auto_matches_for_guild(guild)
+            await asyncio.to_thread(sync_auto_matches_for_guild, guild)
             await refresh_betting_panel(guild)
             await refresh_live_results_panel(guild)
         except Exception:
@@ -3636,7 +3637,7 @@ async def sync_mecze_auto(interaction: discord.Interaction):
         await safe_interaction_send(interaction, content="❌ Brak FOOTBALL_DATA_API_KEY w Railway / env.", ephemeral=True)
         return
 
-    created, updated = sync_auto_matches_for_guild(interaction.guild)
+    created, updated = await asyncio.to_thread(sync_auto_matches_for_guild, interaction.guild)
     await refresh_betting_panel(interaction.guild, force=True)
     await refresh_live_results_panel(interaction.guild, force=True)
     await safe_interaction_send(
