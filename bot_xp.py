@@ -553,6 +553,8 @@ def init_db() -> None:
                 total_won BIGINT NOT NULL DEFAULT 0,
                 current_streak INTEGER NOT NULL DEFAULT 0,
                 best_streak INTEGER NOT NULL DEFAULT 0,
+                biggest_win BIGINT NOT NULL DEFAULT 0,
+                best_odds REAL NOT NULL DEFAULT 0,
                 updated_at BIGINT NOT NULL DEFAULT 0,
                 PRIMARY KEY (guild_id, user_id)
             )
@@ -670,6 +672,8 @@ def init_db() -> None:
                 total_won INTEGER NOT NULL DEFAULT 0,
                 current_streak INTEGER NOT NULL DEFAULT 0,
                 best_streak INTEGER NOT NULL DEFAULT 0,
+                biggest_win INTEGER NOT NULL DEFAULT 0,
+                best_odds REAL NOT NULL DEFAULT 0,
                 updated_at INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY (guild_id, user_id)
             )
@@ -720,6 +724,8 @@ def ensure_betting_schema_migrations() -> None:
         cur.execute("ALTER TABLE betting_matches ADD COLUMN IF NOT EXISTS away_score INTEGER DEFAULT 0")
         cur.execute("ALTER TABLE betting_matches ADD COLUMN IF NOT EXISTS live_status TEXT")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_betting_matches_guild_external ON betting_matches (guild_id, external_id)")
+        cur.execute("ALTER TABLE betting_user_stats ADD COLUMN IF NOT EXISTS biggest_win BIGINT DEFAULT 0")
+        cur.execute("ALTER TABLE betting_user_stats ADD COLUMN IF NOT EXISTS best_odds REAL DEFAULT 0")
     else:
         cur.execute("PRAGMA table_info(betting_matches)")
         cols = {row[1] for row in cur.fetchall()}
@@ -1027,22 +1033,22 @@ def ensure_typer_stats_row(guild_id: int, user_id: int) -> None:
         cur.execute("""
             INSERT INTO betting_user_stats (
                 guild_id, user_id, total_bets, wins, losses, total_staked, total_won,
-                current_streak, best_streak, updated_at
-            ) VALUES (%s, %s, 0, 0, 0, 0, 0, 0, 0, %s)
+                current_streak, best_streak, biggest_win, best_odds, updated_at
+            ) VALUES (%s, %s, 0, 0, 0, 0, 0, 0, 0, 0, 0, %s)
             ON CONFLICT (guild_id, user_id) DO NOTHING
         """, (guild_id, user_id, now_ts))
     else:
         cur.execute("""
             INSERT OR IGNORE INTO betting_user_stats (
                 guild_id, user_id, total_bets, wins, losses, total_staked, total_won,
-                current_streak, best_streak, updated_at
-            ) VALUES (?, ?, 0, 0, 0, 0, 0, 0, 0, ?)
+                current_streak, best_streak, biggest_win, best_odds, updated_at
+            ) VALUES (?, ?, 0, 0, 0, 0, 0, 0, 0, 0, 0, ?)
         """, (guild_id, user_id, now_ts))
     conn.commit()
     conn.close()
 
 
-def register_bet_placed(guild_id: int, user_id: int, stake: int) -> None:
+def register_bet_placed(guild_id: int, user_id: int, stake: int, odds: float) -> None:
     ensure_typer_stats_row(guild_id, user_id)
     conn = db_connect()
     cur = conn.cursor()
@@ -1050,9 +1056,10 @@ def register_bet_placed(guild_id: int, user_id: int, stake: int) -> None:
         UPDATE betting_user_stats
         SET total_bets = total_bets + 1,
             total_staked = total_staked + ?,
+            best_odds = CASE WHEN ? > COALESCE(best_odds, 0) THEN ? ELSE best_odds END,
             updated_at = ?
         WHERE guild_id = ? AND user_id = ?
-    """), (int(stake), int(time.time()), guild_id, user_id))
+    """), (int(stake), float(odds), float(odds), int(time.time()), guild_id, user_id))
     conn.commit()
     conn.close()
 
@@ -1082,11 +1089,12 @@ def register_bet_settlement(guild_id: int, user_id: int, *, won: bool, payout: i
             UPDATE betting_user_stats
             SET wins = ?,
                 total_won = total_won + ?,
+                biggest_win = CASE WHEN ? > COALESCE(biggest_win, 0) THEN ? ELSE biggest_win END,
                 current_streak = ?,
                 best_streak = ?,
                 updated_at = ?
             WHERE guild_id = ? AND user_id = ?
-        """), (wins, int(payout), current_streak, best_streak, now_ts, guild_id, user_id))
+        """), (wins, int(payout), int(payout), int(payout), current_streak, best_streak, now_ts, guild_id, user_id))
     else:
         losses += 1
         current_streak = 0
@@ -1895,7 +1903,9 @@ def place_bet(guild_id: int, match_id: int, user_id: int, pick: str, stake: int,
         conn.close()
 
     if inserted:
-        register_bet_placed(guild_id, user_id, int(stake))
+        match_row = get_betting_match(guild_id, match_id)
+        odds = get_bet_odds_for_pick(match_row, pick) if match_row else 0.0
+        register_bet_placed(guild_id, user_id, int(stake), float(odds))
     return inserted
 
 
@@ -2113,6 +2123,53 @@ def betting_panel_embed(guild: discord.Guild) -> discord.Embed:
     embed.set_footer(text="Bot sam tworzy kanały obstawiania i aktualizuje panel automatycznie.")
     return embed
 
+
+def get_typer_rank_name(total_bets: int, hit_rate: float, roi: float) -> str:
+    if total_bets >= 50 and hit_rate >= 60 and roi >= 15:
+        return "👑 Legenda Typerów"
+    if total_bets >= 30 and hit_rate >= 55 and roi >= 8:
+        return "🥇 Elita"
+    if total_bets >= 15 and hit_rate >= 50 and roi >= 0:
+        return "🥈 Pro Typer"
+    if total_bets >= 5:
+        return "🥉 Początkujący"
+    return "🎯 Debiutant"
+
+
+def get_recent_betting_history(guild_id: int, user_id: int, limit: int = 10) -> list[dict]:
+    conn = db_connect()
+    cur = conn.cursor()
+    cur.execute(sql("""
+        SELECT b.*, m.home_team, m.away_team, m.status, m.result, m.start_ts, m.home_score, m.away_score
+        FROM betting_bets b
+        JOIN betting_matches m
+          ON b.guild_id = m.guild_id AND b.match_id = m.match_id
+        WHERE b.guild_id = ? AND b.user_id = ?
+        ORDER BY b.created_at DESC
+        LIMIT ?
+    """), (guild_id, user_id, limit))
+    rows = cur.fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+
+def recent_history_lines(guild_id: int, user_id: int, limit: int = 5) -> str:
+    rows = get_recent_betting_history(guild_id, user_id, limit)
+    if not rows:
+        return "Brak historii kuponów."
+
+    out_lines = []
+    for row in rows:
+        status = str(row["status"])
+        score_txt = ""
+        if status == "settled":
+            score_txt = f" | wynik {int(row.get('home_score') or 0)}:{int(row.get('away_score') or 0)}"
+        out_lines.append(
+            f"**#{row['match_id']}** {row['home_team']} vs {row['away_team']} | "
+            f"{format_pick_label(row['pick'])} | {row['stake']} pkt | {status}{score_txt}"
+        )
+    return "\n".join(out_lines)
+
 def typer_ranking_embed(guild: discord.Guild) -> discord.Embed:
     rows = get_top_typers(guild.id, 10)
     embed = discord.Embed(title="🏆 Ranking typerów", color=discord.Color.gold())
@@ -2152,7 +2209,7 @@ def user_typer_stats_embed(guild: discord.Guild, user_id: int) -> discord.Embed:
     member = guild.get_member(user_id)
     name = member.display_name if member else str(user_id)
 
-    embed = discord.Embed(title=f"📊 Staty typera: {name}", color=discord.Color.blurple())
+    embed = discord.Embed(title=f"📊 Staty typera PRO: {name}", color=discord.Color.blurple())
     if not row:
         embed.description = "Brak statystyk."
         return embed
@@ -2162,26 +2219,32 @@ def user_typer_stats_embed(guild: discord.Guild, user_id: int) -> discord.Embed:
     losses = int(row["losses"])
     total_staked = int(row["total_staked"])
     total_won = int(row["total_won"])
+    biggest_win = int(row.get("biggest_win") or 0)
+    best_odds = float(row.get("best_odds") or 0)
     hit_rate = (wins / total_bets * 100.0) if total_bets > 0 else 0.0
     roi = (((total_won - total_staked) / total_staked) * 100.0) if total_staked > 0 else 0.0
+    rank_name = get_typer_rank_name(total_bets, hit_rate, roi)
 
+    embed.add_field(name="Ranga", value=rank_name, inline=False)
     embed.add_field(name="Zakłady", value=str(total_bets), inline=True)
     embed.add_field(name="Wygrane", value=str(wins), inline=True)
     embed.add_field(name="Przegrane", value=str(losses), inline=True)
     embed.add_field(name="Winrate", value=f"{hit_rate:.1f}%", inline=True)
+    embed.add_field(name="ROI", value=f"{roi:.1f}%", inline=True)
     embed.add_field(name="Postawione", value=f"{total_staked} pkt", inline=True)
     embed.add_field(name="Wygrane pkt", value=f"{total_won} pkt", inline=True)
-    embed.add_field(name="ROI", value=f"{roi:.1f}%", inline=True)
+    embed.add_field(name="Największa wygrana", value=f"{biggest_win} pkt", inline=True)
+    embed.add_field(name="Najlepszy kurs", value=f"{best_odds:.2f}" if best_odds > 0 else "brak", inline=True)
     embed.add_field(name="Aktualna seria", value=str(int(row["current_streak"])), inline=True)
     embed.add_field(name="Najlepsza seria", value=str(int(row["best_streak"])), inline=True)
+    embed.add_field(name="Ostatnie kupony", value=recent_history_lines(guild.id, user_id, 5), inline=False)
     return embed
-
 
 def betting_stats_panel_embed(guild: discord.Guild) -> discord.Embed:
     top_rows = get_top_typers(guild.id, 3)
     embed = discord.Embed(
         title="📊 Profil graczy PRO",
-        description="Tutaj masz najważniejsze statystyki typerów. Użyj `/moje_staty_typerskie`, żeby zobaczyć swój pełny profil.",
+        description="Najważniejsze statystyki typerów, rangi, największe wygrane i szybki dostęp do komend.",
         color=discord.Color.blurple()
     )
 
@@ -2200,25 +2263,26 @@ def betting_stats_panel_embed(guild: discord.Guild) -> discord.Embed:
         wins = int(row["wins"])
         total_staked = int(row["total_staked"])
         total_won = int(row["total_won"])
+        biggest_win = int(row.get("biggest_win") or 0)
+        best_odds = float(row.get("best_odds") or 0)
         hit_rate = (wins / total_bets * 100.0) if total_bets > 0 else 0.0
         roi = (((total_won - total_staked) / total_staked) * 100.0) if total_staked > 0 else 0.0
 
         lines.append(
-            f"{medals[idx]} **{member.display_name}**\n"
+            f"{medals[idx]} **{member.display_name}** — {get_typer_rank_name(total_bets, hit_rate, roi)}\n"
             f"Zakłady: **{total_bets}** | Winrate: **{hit_rate:.1f}%** | ROI: **{roi:.1f}%**\n"
-            f"Najlepsza seria: **{int(row['best_streak'])}** | Wygrane pkt: **{total_won}**"
+            f"Największa wygrana: **{biggest_win} pkt** | Najlepszy kurs: **{best_odds:.2f}**"
         )
 
     embed.add_field(name="Top 3 typerów", value="\n\n".join(lines) if lines else "Brak danych.", inline=False)
-    embed.add_field(name="Komendy", value="`/moje_staty_typerskie` • `/ranking_typerow` • `/moje_typy`", inline=False)
+    embed.add_field(name="Komendy", value="`/moje_staty_typerskie` • `/profil_typera` • `/ranking_typerow` • `/moje_typy`", inline=False)
     return embed
-
 
 def betting_ranking_panel_embed(guild: discord.Guild) -> discord.Embed:
     rows = get_top_typers(guild.id, 10)
     embed = discord.Embed(
         title="🥇 Ranking typerów",
-        description="Najlepsi typerzy na serwerze według wygranych punktów, skuteczności i serii.",
+        description="Najlepsi typerzy na serwerze według wygranych punktów, skuteczności, ROI i serii.",
         color=discord.Color.gold()
     )
 
@@ -2238,18 +2302,22 @@ def betting_ranking_panel_embed(guild: discord.Guild) -> discord.Embed:
         wins = int(row["wins"])
         total_staked = int(row["total_staked"])
         total_won = int(row["total_won"])
+        biggest_win = int(row.get("biggest_win") or 0)
+        best_odds = float(row.get("best_odds") or 0)
         hit_rate = (wins / total_bets * 100.0) if total_bets > 0 else 0.0
         roi = (((total_won - total_staked) / total_staked) * 100.0) if total_staked > 0 else 0.0
+        rank_name = get_typer_rank_name(total_bets, hit_rate, roi)
 
         line = (
-            f"**{pos}. {member.display_name}**\n"
+            f"**{pos}. {member.display_name}** — {rank_name}\n"
             f"Zakłady: **{total_bets}** | Winrate: **{hit_rate:.1f}%** | ROI: **{roi:.1f}%**\n"
-            f"Wygrane pkt: **{total_won}** | Seria: **{int(row['best_streak'])}**"
+            f"Wygrane pkt: **{total_won}** | Największa wygrana: **{biggest_win}** | Kurs max: **{best_odds:.2f}** | Seria: **{int(row['best_streak'])}**"
         )
 
         block = line if not current else "\n\n" + line
         if len(current) + len(block) > 1000:
-            chunks.append(current)
+            if current:
+                chunks.append(current)
             current = line
         else:
             current += block
@@ -2263,7 +2331,6 @@ def betting_ranking_panel_embed(guild: discord.Guild) -> discord.Embed:
 
     return embed
 
-
 def betting_bets_panel_embed(guild: discord.Guild) -> discord.Embed:
     panel_channel_id = get_betting_panel_channel_id(guild.id)
     embed = discord.Embed(
@@ -2273,7 +2340,7 @@ def betting_bets_panel_embed(guild: discord.Guild) -> discord.Embed:
     )
     if panel_channel_id:
         embed.add_field(name="Panel główny", value=f"Wejdź do <#{panel_channel_id}> aby wybrać mecz i typ.", inline=False)
-    embed.add_field(name="Komendy", value="`/obstaw` • `/obstaw_dokladny_wynik` • `/moje_typy`", inline=False)
+    embed.add_field(name="Komendy", value="`/obstaw` • `/obstaw_dokladny_wynik` • `/moje_typy` • `/moje_staty_typerskie`", inline=False)
     embed.add_field(name="Minimalna stawka", value=f"{BETTING_MIN_STAKE} pkt", inline=False)
     return embed
 
