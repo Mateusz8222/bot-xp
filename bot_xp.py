@@ -1153,9 +1153,20 @@ def get_match_by_external_id(guild_id: int, external_id: str) -> dict | None:
     return row
 
 
-def update_match_scores_and_status(guild_id: int, match_id: int, home_score: int, away_score: int, live_status: str, local_status: str) -> None:
+def update_match_scores_and_status(guild_id: int, match_id: int, home_score, away_score, live_status: str, local_status: str) -> None:
     conn = db_connect()
     cur = conn.cursor()
+
+    cur.execute(sql("""
+        SELECT home_score, away_score
+        FROM betting_matches
+        WHERE guild_id = ? AND match_id = ?
+    """), (guild_id, match_id))
+    current = fetchone_dict(cur) or {"home_score": 0, "away_score": 0}
+
+    final_home = int(home_score) if home_score is not None else int(current.get("home_score") or 0)
+    final_away = int(away_score) if away_score is not None else int(current.get("away_score") or 0)
+
     cur.execute(sql("""
         UPDATE betting_matches
         SET home_score = ?,
@@ -1163,7 +1174,7 @@ def update_match_scores_and_status(guild_id: int, match_id: int, home_score: int
             live_status = ?,
             status = CASE WHEN status = 'settled' THEN status ELSE ? END
         WHERE guild_id = ? AND match_id = ?
-    """), (int(home_score), int(away_score), live_status, local_status, guild_id, match_id))
+    """), (final_home, final_away, live_status, local_status, guild_id, match_id))
     conn.commit()
     conn.close()
 
@@ -1243,14 +1254,15 @@ def normalize_api_result_to_pick(winner: str | None) -> str | None:
 
 
 def map_api_status_to_local(status: str, start_ts: int) -> str:
-    now_ts = int(time.time())
     status = (status or "").upper()
 
     if status in {"FINISHED", "AWARDED"}:
         return "settled"
     if status in {"IN_PLAY", "PAUSED", "LIVE", "SUSPENDED"}:
         return "closed"
-    if start_ts <= now_ts:
+    if status in {"SCHEDULED", "TIMED", "POSTPONED"}:
+        return "open"
+    if status == "CANCELLED":
         return "closed"
     return "open"
 
@@ -1405,8 +1417,10 @@ def sync_auto_matches_for_guild(guild: discord.Guild) -> tuple[int, int]:
             local_status = map_api_status_to_local(api_status, start_ts)
 
             full_time = (item.get("score") or {}).get("fullTime") or {}
-            home_score = int(full_time.get("home") or 0)
-            away_score = int(full_time.get("away") or 0)
+            home_score_raw = full_time.get("home")
+            away_score_raw = full_time.get("away")
+            home_score = int(home_score_raw) if home_score_raw is not None else None
+            away_score = int(away_score_raw) if away_score_raw is not None else None
 
             existing = get_match_by_external_id(guild.id, ext_id)
             if existing is None:
@@ -2037,7 +2051,11 @@ def betting_match_embed(match_row: dict) -> discord.Embed:
         value=f"1 = {float(match_row['odds_home']):.2f}\nX = {float(match_row['odds_draw']):.2f}\n2 = {float(match_row['odds_away']):.2f}",
         inline=False
     )
-    score_txt = f"{int(match_row.get('home_score') or 0)} : {int(match_row.get('away_score') or 0)}"
+    live_status = str(match_row.get("live_status") or "")
+    if live_status in {"TIMED", "SCHEDULED", "POSTPONED"} and match_row["status"] == "open":
+        score_txt = "brak"
+    else:
+        score_txt = f"{int(match_row.get('home_score') or 0)} : {int(match_row.get('away_score') or 0)}"
     embed.add_field(name="Wynik", value=score_txt, inline=True)
     embed.add_field(name="Status", value=status_map.get(match_row["status"], str(match_row["status"])), inline=True)
     embed.add_field(name="Live", value=str(match_row.get("live_status") or "brak"), inline=True)
@@ -2342,6 +2360,7 @@ def betting_bets_panel_embed(guild: discord.Guild) -> discord.Embed:
         embed.add_field(name="Panel główny", value=f"Wejdź do <#{panel_channel_id}> aby wybrać mecz i typ.", inline=False)
     embed.add_field(name="Komendy", value="`/obstaw` • `/obstaw_dokladny_wynik` • `/moje_typy` • `/moje_staty_typerskie`", inline=False)
     embed.add_field(name="Minimalna stawka", value=f"{BETTING_MIN_STAKE} pkt", inline=False)
+    embed.add_field(name="Punkty", value="Stawka schodzi przy obstawieniu. Po wygranej bot dopisuje wygraną liczbę punktów, po przegranej stawka przepada.", inline=False)
     return embed
 
 
@@ -2362,8 +2381,13 @@ def live_results_embed(guild: discord.Guild) -> discord.Embed:
 
     lines = []
     for row in live_rows[:LIVE_RESULTS_LIMIT]:
+        live_status = str(row.get("live_status") or "")
+        if live_status in {"TIMED", "SCHEDULED", "POSTPONED"} and row["status"] == "open":
+            score_part = "vs"
+        else:
+            score_part = f"{int(row.get('home_score') or 0)}:{int(row.get('away_score') or 0)}"
         lines.append(
-            f"**#{row['match_id']}** | {row['home_team']} {int(row.get('home_score') or 0)}:{int(row.get('away_score') or 0)} {row['away_team']}\n"
+            f"**#{row['match_id']}** | {row['home_team']} {score_part} {row['away_team']}\n"
             f"Live: **{row.get('live_status') or row['status']}** | Liga: **{row.get('competition_name') or row.get('competition_code') or 'brak'}**"
         )
 
@@ -2649,6 +2673,12 @@ async def refresh_live_results_panel(guild: discord.Guild, *, force: bool = Fals
     await ensure_panel_message(guild, "betting_live", live_results_embed(guild), None)
     bot.panel_refresh_cache[cache_key] = now_ts
 
+
+
+async def refresh_betting_side_panels(guild: discord.Guild, *, force: bool = False) -> None:
+    await ensure_panel_message(guild, "betting_bets", betting_bets_panel_embed(guild), None)
+    await ensure_panel_message(guild, "betting_ranking", betting_ranking_panel_embed(guild), None)
+    await ensure_panel_message(guild, "betting_stats", betting_stats_panel_embed(guild), None)
 
 
 # =========================================================
@@ -3777,6 +3807,7 @@ async def auto_fetch_matches_loop():
             await asyncio.to_thread(sync_auto_matches_for_guild, guild)
             await refresh_betting_panel(guild)
             await refresh_live_results_panel(guild)
+            await refresh_betting_side_panels(guild)
         except Exception:
             pass
 
@@ -3792,6 +3823,7 @@ async def betting_panel_loop():
         try:
             await refresh_betting_panel(guild)
             await refresh_live_results_panel(guild)
+            await refresh_betting_side_panels(guild)
         except Exception:
             pass
 
@@ -3934,6 +3966,7 @@ async def setup_obstawianie_auto(interaction: discord.Interaction):
     created = await ensure_betting_system_channels(interaction.guild)
     await refresh_betting_panel(interaction.guild, force=True)
     await refresh_live_results_panel(interaction.guild, force=True)
+    await refresh_betting_side_panels(interaction.guild, force=True)
     panel_id = created.get("betting")
     live_id = created.get("betting_live")
     bets_id = created.get("betting_bets")
@@ -4121,8 +4154,9 @@ async def panel_obstawiania(interaction: discord.Interaction):
         await safe_interaction_send(interaction, content=f"❌ Panel obstawiania ustawiaj tylko w kanale <#{panel_channel_id}>.", ephemeral=True)
         return
 
-    await refresh_betting_panel(interaction.guild)
-    await refresh_live_results_panel(interaction.guild)
+    await refresh_betting_panel(interaction.guild, force=True)
+    await refresh_live_results_panel(interaction.guild, force=True)
+    await refresh_betting_side_panels(interaction.guild, force=True)
     await safe_interaction_send(interaction, content="✅ Panel obstawiania został ustawiony / odświeżony.", ephemeral=True)
 
 
@@ -4262,8 +4296,9 @@ async def obstaw(interaction: discord.Interaction, mecz_id: int, typ: str, stawk
     embed.add_field(name="Stawka", value=f"{stawka} pkt", inline=True)
     embed.add_field(name="Możliwa wygrana", value=f"{potential_win} pkt", inline=True)
     await safe_interaction_send(interaction, embed=embed, ephemeral=True)
-    await refresh_betting_panel(interaction.guild)
-    await refresh_live_results_panel(interaction.guild)
+    await refresh_betting_panel(interaction.guild, force=True)
+    await refresh_live_results_panel(interaction.guild, force=True)
+    await refresh_betting_side_panels(interaction.guild, force=True)
 
 
 @bot.tree.command(name="obstaw_dokladny_wynik", description="Obstawia dokładny wynik meczu za punkty")
@@ -4360,8 +4395,9 @@ async def zamknij_obstawianie(interaction: discord.Interaction, mecz_id: int):
 
     match_row = get_betting_match(interaction.guild.id, mecz_id)
     await safe_interaction_send(interaction, embed=betting_match_embed(match_row), ephemeral=False)
-    await refresh_betting_panel(interaction.guild)
-    await refresh_live_results_panel(interaction.guild)
+    await refresh_betting_panel(interaction.guild, force=True)
+    await refresh_live_results_panel(interaction.guild, force=True)
+    await refresh_betting_side_panels(interaction.guild, force=True)
 
 
 @bot.tree.command(name="wynik_dokladny_meczu", description="Ustawia dokładny wynik meczu i rozlicza także zakłady na dokładny wynik")
@@ -4408,6 +4444,9 @@ async def wynik_dokladny_meczu(interaction: discord.Interaction, mecz_id: int, g
         inline=False
     )
     await safe_interaction_send(interaction, embed=embed, ephemeral=False)
+    await refresh_betting_panel(interaction.guild, force=True)
+    await refresh_live_results_panel(interaction.guild, force=True)
+    await refresh_betting_side_panels(interaction.guild, force=True)
 
 
 @bot.tree.command(name="wynik_meczu", description="Rozlicza mecz i wypłaca wygrane")
@@ -4433,8 +4472,9 @@ async def wynik_meczu(interaction: discord.Interaction, mecz_id: int, wynik: str
     embed = betting_match_embed(match_row)
     embed.add_field(name="Rozliczenie", value=f"Wynik: **{result}**\nWygrani: **{winners}**\nWypłacono: **{total_paid} pkt**", inline=False)
     await safe_interaction_send(interaction, embed=embed, ephemeral=False)
-    await refresh_betting_panel(interaction.guild)
-    await refresh_live_results_panel(interaction.guild)
+    await refresh_betting_panel(interaction.guild, force=True)
+    await refresh_live_results_panel(interaction.guild, force=True)
+    await refresh_betting_side_panels(interaction.guild, force=True)
 
 @bot.tree.command(name="odswiez_panele", description="Odświeża wszystkie panele bota")
 @app_commands.checks.has_permissions(manage_guild=True)
