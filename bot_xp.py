@@ -1717,6 +1717,48 @@ def contains_shortened_link(content: str) -> bool:
     return any(keyword in text for keyword in AUTOMOD_SHORTENER_KEYWORDS)
 
 
+def is_exact_score_pick(pick: str) -> bool:
+    return str(pick).startswith("SCORE:")
+
+
+def parse_exact_score_pick(pick: str) -> tuple[int, int]:
+    raw = str(pick).split(":", 1)[1]
+    home_s, away_s = raw.split("-", 1)
+    return int(home_s), int(away_s)
+
+
+def format_pick_label(pick: str) -> str:
+    if is_exact_score_pick(pick):
+        home_g, away_g = parse_exact_score_pick(pick)
+        return f"dokładny wynik {home_g}:{away_g}"
+    return str(pick)
+
+
+def get_exact_score_odds(match_row: dict, home_goals: int, away_goals: int) -> float:
+    # Prosty model kursu dla dokładnego wyniku oparty o 1X2
+    if home_goals < 0 or away_goals < 0:
+        raise ValueError("Liczba goli nie może być ujemna.")
+
+    total_goals = home_goals + away_goals
+
+    if home_goals > away_goals:
+        base = float(match_row["odds_home"])
+    elif home_goals == away_goals:
+        base = float(match_row["odds_draw"])
+    else:
+        base = float(match_row["odds_away"])
+
+    multiplier = 2.0 + (total_goals * 0.35)
+    if home_goals == away_goals:
+        multiplier += 0.45
+    if home_goals == 0 or away_goals == 0:
+        multiplier += 0.25
+    if home_goals >= 4 or away_goals >= 4:
+        multiplier += 0.50
+
+    return round(min(60.0, max(3.5, base * multiplier)), 2)
+
+
 def get_bet_odds_for_pick(match_row: dict, pick: str) -> float:
     if pick == "1":
         return float(match_row["odds_home"])
@@ -1724,6 +1766,9 @@ def get_bet_odds_for_pick(match_row: dict, pick: str) -> float:
         return float(match_row["odds_draw"])
     if pick == "2":
         return float(match_row["odds_away"])
+    if is_exact_score_pick(pick):
+        home_g, away_g = parse_exact_score_pick(pick)
+        return get_exact_score_odds(match_row, home_g, away_g)
     raise ValueError("Niepoprawny typ zakładu.")
 
 
@@ -1916,9 +1961,22 @@ def settle_betting_match(guild_id: int, match_id: int, result: str) -> tuple[int
 
     winners = 0
     total_paid = 0
+    actual_home = int(match_row.get("home_score") or 0)
+    actual_away = int(match_row.get("away_score") or 0)
 
     for bet in bets:
-        if bet["pick"] == result:
+        won = False
+
+        if is_exact_score_pick(bet["pick"]):
+            try:
+                pick_home, pick_away = parse_exact_score_pick(bet["pick"])
+                won = (pick_home == actual_home and pick_away == actual_away)
+            except Exception:
+                won = False
+        else:
+            won = (bet["pick"] == result)
+
+        if won:
             payout = int(bet["potential_win"])
             add_points(guild_id, int(bet["user_id"]), payout)
             register_bet_settlement(guild_id, int(bet["user_id"]), won=True, payout=payout)
@@ -1996,7 +2054,7 @@ def my_bets_embed(rows: list[dict]) -> discord.Embed:
         result_txt = f" | wynik: {row['result']}" if row.get("result") else ""
         lines.append(
             f"**#{row['match_id']}** | {row['home_team']} vs {row['away_team']} | "
-            f"typ: **{row['pick']}** | stawka: **{row['stake']} pkt** | "
+            f"typ: **{format_pick_label(row['pick'])}** | stawka: **{row['stake']} pkt** | "
             f"wygrana: **{row['potential_win']} pkt** | status: **{row['status']}**{result_txt}"
         )
     embed.description = "\n".join(lines)
@@ -2217,22 +2275,101 @@ class BetStakeModal(discord.ui.Modal, title="🎯 Postaw zakład"):
         await safe_interaction_send(interaction, embed=embed, ephemeral=True)
 
 
+
+class ExactScoreBetModal(discord.ui.Modal, title="🎯 Dokładny wynik"):
+    home_goals = discord.ui.TextInput(label="Gole gospodarzy", placeholder="Np. 2", required=True, max_length=2)
+    away_goals = discord.ui.TextInput(label="Gole gości", placeholder="Np. 1", required=True, max_length=2)
+    stake = discord.ui.TextInput(label="Stawka w punktach", placeholder="Np. 100", required=True, max_length=10)
+
+    def __init__(self, match_id: int):
+        super().__init__()
+        self.match_id = int(match_id)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if interaction.guild is None:
+            await safe_interaction_send(interaction, content="Ta akcja działa tylko na serwerze.", ephemeral=True)
+            return
+
+        try:
+            home_g = int(str(self.home_goals).strip())
+            away_g = int(str(self.away_goals).strip())
+            stake_value = int(str(self.stake).strip())
+        except ValueError:
+            await safe_interaction_send(interaction, content="❌ Musisz wpisać liczby całkowite.", ephemeral=True)
+            return
+
+        if home_g < 0 or away_g < 0:
+            await safe_interaction_send(interaction, content="❌ Liczba goli nie może być ujemna.", ephemeral=True)
+            return
+
+        if stake_value < BETTING_MIN_STAKE:
+            await safe_interaction_send(interaction, content=f"❌ Minimalna stawka to {BETTING_MIN_STAKE} pkt.", ephemeral=True)
+            return
+
+        match_row = get_betting_match(interaction.guild.id, self.match_id)
+        if not match_row:
+            await safe_interaction_send(interaction, content="❌ Nie znaleziono meczu.", ephemeral=True)
+            return
+
+        if match_row["status"] != "open":
+            await safe_interaction_send(interaction, content="❌ Ten mecz nie jest już otwarty do obstawiania.", ephemeral=True)
+            return
+
+        if int(match_row["start_ts"]) <= int(time.time()):
+            await safe_interaction_send(interaction, content="❌ Czas obstawiania minął.", ephemeral=True)
+            return
+
+        existing_bet = get_user_bet(interaction.guild.id, self.match_id, interaction.user.id)
+        if existing_bet:
+            await safe_interaction_send(interaction, content="❌ Już obstawiłeś ten mecz.", ephemeral=True)
+            return
+
+        points_row = get_points_row(interaction.guild.id, interaction.user.id)
+        total_points = int(points_row["total_points"]) if points_row else 0
+        if total_points < stake_value:
+            await safe_interaction_send(interaction, content="❌ Nie masz tyle punktów.", ephemeral=True)
+            return
+
+        pick = f"SCORE:{home_g}-{away_g}"
+        odds = get_bet_odds_for_pick(match_row, pick)
+        potential_win = int(round(stake_value * odds))
+
+        inserted = place_bet(interaction.guild.id, self.match_id, interaction.user.id, pick, stake_value, potential_win)
+        if not inserted:
+            await safe_interaction_send(interaction, content="❌ Nie udało się zapisać zakładu.", ephemeral=True)
+            return
+
+        remove_total_points(interaction.guild.id, interaction.user.id, stake_value)
+
+        embed = discord.Embed(title="✅ Zakład na dokładny wynik przyjęty", color=discord.Color.green())
+        embed.add_field(name="Mecz", value=f"#{self.match_id} | {match_row['home_team']} vs {match_row['away_team']}", inline=False)
+        embed.add_field(name="Typ", value=f"{home_g}:{away_g}", inline=True)
+        embed.add_field(name="Kurs", value=f"{odds:.2f}", inline=True)
+        embed.add_field(name="Stawka", value=f"{stake_value} pkt", inline=True)
+        embed.add_field(name="Możliwa wygrana", value=f"{potential_win} pkt", inline=False)
+        await safe_interaction_send(interaction, embed=embed, ephemeral=True)
+
+
 class BettingPickView(discord.ui.View):
     def __init__(self, match_id: int):
         super().__init__(timeout=180)
         self.match_id = int(match_id)
 
-    @discord.ui.button(label="1", style=discord.ButtonStyle.success)
+    @discord.ui.button(label="1", style=discord.ButtonStyle.success, row=0)
     async def pick_home(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(BetStakeModal(self.match_id, "1"))
 
-    @discord.ui.button(label="X", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="X", style=discord.ButtonStyle.secondary, row=0)
     async def pick_draw(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(BetStakeModal(self.match_id, "X"))
 
-    @discord.ui.button(label="2", style=discord.ButtonStyle.danger)
+    @discord.ui.button(label="2", style=discord.ButtonStyle.danger, row=0)
     async def pick_away(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(BetStakeModal(self.match_id, "2"))
+
+    @discord.ui.button(label="🎯 Dokładny wynik", style=discord.ButtonStyle.primary, row=1)
+    async def exact_score(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(ExactScoreBetModal(self.match_id))
 
 
 class BettingMatchSelect(discord.ui.Select):
@@ -2270,7 +2407,7 @@ class BettingMatchSelect(discord.ui.Select):
             return
 
         embed = betting_match_embed(match_row)
-        embed.add_field(name="Jak obstawić", value="Kliknij 1, X albo 2 i podaj stawkę w punktach.", inline=False)
+        embed.add_field(name="Jak obstawić", value="Kliknij 1, X, 2 albo **Dokładny wynik** i podaj stawkę w punktach.", inline=False)
         await safe_interaction_send(interaction, embed=embed, view=BettingPickView(match_id), ephemeral=True)
 
 
@@ -2572,7 +2709,7 @@ def xpinfo_embed() -> discord.Embed:
     embed.add_field(name="🛡️ System kar", value=f"AutoMod daje warny. 1 = ostrzeżenie, 10 = kick, 20 = ban. Co {AUTOMOD_WARN_DECAY_HOURS}h bez przewinień schodzi 1 warn.", inline=False)
     embed.add_field(name="🔗 Linki", value="Discord invite = natychmiastowy ban. TikTok / YouTube / Kick / skrócone linki = usunięcie + warn.", inline=False)
     embed.add_field(name="⚙️ Panel moderacji", value="Użyj `/panel_moderacji`, `/moderacja_on`, `/moderacja_off`, `/status_moderacji`.", inline=False)
-    embed.add_field(name="🎯 Obstawianie", value=f"Panel meczów działa w <#{BETTING_CHANNEL_ID}>. Użyj `/panel_obstawiania`.", inline=False)
+    embed.add_field(name="🎯 Obstawianie", value=f"Panel meczów działa w <#{BETTING_CHANNEL_ID}>. Użyj `/panel_obstawiania`. Dostępny też **dokładny wynik**.", inline=False)
     embed.add_field(name="⚽ Auto mecze", value="Bot może pobierać mecze z football-data.org i sam aktualizować panel. Użyj `/sync_mecze_auto`.", inline=False)
     embed.add_field(name="🏆 Typerzy i LIVE", value="Masz `/ranking_typerow`, `/moje_staty_typerskie` i panel LIVE wyników. Dla mniejszych limitów ustaw osobny `BETTING_LIVE_CHANNEL_ID`.", inline=False)
     embed.add_field(name="❌ Punkty VC nie lecą gdy", value="bot / mute / deaf / kanał AFK", inline=False)
@@ -3846,6 +3983,74 @@ async def obstaw(interaction: discord.Interaction, mecz_id: int, typ: str, stawk
     await refresh_live_results_panel(interaction.guild)
 
 
+@bot.tree.command(name="obstaw_dokladny_wynik", description="Obstawia dokładny wynik meczu za punkty")
+@app_commands.describe(
+    mecz_id="ID meczu",
+    gole_gospodarzy="Ile goli strzelą gospodarze",
+    gole_gosci="Ile goli strzelą goście",
+    stawka="Ile punktów chcesz postawić",
+)
+async def obstaw_dokladny_wynik(interaction: discord.Interaction, mecz_id: int, gole_gospodarzy: int, gole_gosci: int, stawka: int):
+    if interaction.guild is None:
+        await safe_interaction_send(interaction, content="Ta komenda działa tylko na serwerze.", ephemeral=True)
+        return
+
+    if interaction.channel_id != BETTING_CHANNEL_ID:
+        await safe_interaction_send(interaction, content=f"❌ Obstawianie działa tylko w kanale <#{BETTING_CHANNEL_ID}>.", ephemeral=True)
+        return
+
+    if gole_gospodarzy < 0 or gole_gosci < 0:
+        await safe_interaction_send(interaction, content="❌ Liczba goli nie może być ujemna.", ephemeral=True)
+        return
+
+    if stawka < BETTING_MIN_STAKE:
+        await safe_interaction_send(interaction, content=f"❌ Minimalna stawka to {BETTING_MIN_STAKE} pkt.", ephemeral=True)
+        return
+
+    match_row = get_betting_match(interaction.guild.id, mecz_id)
+    if not match_row:
+        await safe_interaction_send(interaction, content="❌ Nie znaleziono meczu.", ephemeral=True)
+        return
+
+    if match_row["status"] != "open":
+        await safe_interaction_send(interaction, content="❌ Ten mecz nie jest już otwarty do obstawiania.", ephemeral=True)
+        return
+
+    if int(match_row["start_ts"]) <= int(time.time()):
+        await safe_interaction_send(interaction, content="❌ Czas obstawiania minął.", ephemeral=True)
+        return
+
+    existing_bet = get_user_bet(interaction.guild.id, mecz_id, interaction.user.id)
+    if existing_bet:
+        await safe_interaction_send(interaction, content="❌ Już obstawiłeś ten mecz.", ephemeral=True)
+        return
+
+    points_row = get_points_row(interaction.guild.id, interaction.user.id)
+    total_points = int(points_row["total_points"]) if points_row else 0
+    if total_points < stawka:
+        await safe_interaction_send(interaction, content="❌ Nie masz tyle punktów.", ephemeral=True)
+        return
+
+    pick = f"SCORE:{gole_gospodarzy}-{gole_gosci}"
+    odds = get_bet_odds_for_pick(match_row, pick)
+    potential_win = int(round(stawka * odds))
+
+    inserted = place_bet(interaction.guild.id, mecz_id, interaction.user.id, pick, stawka, potential_win)
+    if not inserted:
+        await safe_interaction_send(interaction, content="❌ Nie udało się zapisać zakładu.", ephemeral=True)
+        return
+
+    remove_total_points(interaction.guild.id, interaction.user.id, stawka)
+
+    embed = discord.Embed(title="✅ Zakład na dokładny wynik przyjęty", color=discord.Color.green())
+    embed.add_field(name="Mecz", value=f"#{mecz_id} | {match_row['home_team']} vs {match_row['away_team']}", inline=False)
+    embed.add_field(name="Typ", value=f"{gole_gospodarzy}:{gole_gosci}", inline=True)
+    embed.add_field(name="Kurs", value=f"{odds:.2f}", inline=True)
+    embed.add_field(name="Stawka", value=f"{stawka} pkt", inline=True)
+    embed.add_field(name="Możliwa wygrana", value=f"{potential_win} pkt", inline=False)
+    await safe_interaction_send(interaction, embed=embed, ephemeral=True)
+
+
 @bot.tree.command(name="moje_typy", description="Pokazuje Twoje obstawione mecze")
 async def moje_typy(interaction: discord.Interaction):
     if interaction.guild is None:
@@ -3873,6 +4078,52 @@ async def zamknij_obstawianie(interaction: discord.Interaction, mecz_id: int):
     await safe_interaction_send(interaction, embed=betting_match_embed(match_row), ephemeral=False)
     await refresh_betting_panel(interaction.guild)
     await refresh_live_results_panel(interaction.guild)
+
+
+@bot.tree.command(name="wynik_dokladny_meczu", description="Ustawia dokładny wynik meczu i rozlicza także zakłady na dokładny wynik")
+@app_commands.checks.has_permissions(manage_guild=True)
+@app_commands.describe(mecz_id="ID meczu", gole_gospodarzy="Gole gospodarzy", gole_gosci="Gole gości")
+async def wynik_dokladny_meczu(interaction: discord.Interaction, mecz_id: int, gole_gospodarzy: int, gole_gosci: int):
+    if interaction.guild is None:
+        await safe_interaction_send(interaction, content="Ta komenda działa tylko na serwerze.", ephemeral=True)
+        return
+
+    match_row = get_betting_match(interaction.guild.id, mecz_id)
+    if not match_row:
+        await safe_interaction_send(interaction, content="❌ Nie znaleziono meczu.", ephemeral=True)
+        return
+
+    conn = db_connect()
+    cur = conn.cursor()
+    cur.execute(sql("""
+        UPDATE betting_matches
+        SET home_score = ?, away_score = ?
+        WHERE guild_id = ? AND match_id = ?
+    """), (int(gole_gospodarzy), int(gole_gosci), interaction.guild.id, mecz_id))
+    conn.commit()
+    conn.close()
+
+    if gole_gospodarzy > gole_gosci:
+        result = "1"
+    elif gole_gospodarzy == gole_gosci:
+        result = "X"
+    else:
+        result = "2"
+
+    try:
+        winners, total_paid = settle_betting_match(interaction.guild.id, mecz_id, result)
+    except ValueError as e:
+        await safe_interaction_send(interaction, content=f"❌ {e}", ephemeral=True)
+        return
+
+    match_row = get_betting_match(interaction.guild.id, mecz_id)
+    embed = betting_match_embed(match_row)
+    embed.add_field(
+        name="Rozliczenie",
+        value=f"Wynik dokładny: **{gole_gospodarzy}:{gole_gosci}**\n1X2: **{result}**\nWygrani: **{winners}**\nWypłacono: **{total_paid} pkt**",
+        inline=False
+    )
+    await safe_interaction_send(interaction, embed=embed, ephemeral=False)
 
 
 @bot.tree.command(name="wynik_meczu", description="Rozlicza mecz i wypłaca wygrane")
