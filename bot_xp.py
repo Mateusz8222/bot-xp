@@ -37,6 +37,15 @@ SHOP_CHANNEL_ID = 1490648124006338640        # 🛒・sklep
 BETTING_CHANNEL_ID = 1487496845176606821     # 🤑・obstawianie-meczy
 BETTING_LIVE_CHANNEL_ID = 1487496845176606821  # ten sam kanał dla panelu live
 
+BETTING_CATEGORY_NAME = "🎯 OBSTAWIANIE"
+BETTING_AUTO_CHANNELS = {
+    "betting": "🎯・panel",
+    "betting_live": "🔴・live",
+    "betting_bets": "🧾・typy",
+    "betting_ranking": "🥇・ranking",
+    "betting_stats": "📊・staty",
+}
+
 LEGEND_TEXT_CHANNEL_ID = 1490791025671803013 # 💎・legenda-czat
 LEGEND_VC_CHANNEL_ID = 1490792255504646407   # 💎・Legenda VC
 SHOP_LOG_CHANNEL_ID = 1491934996745683035      # 📜・logi-pod-sklep
@@ -2069,7 +2078,8 @@ def betting_panel_embed(guild: discord.Guild) -> discord.Embed:
         color=discord.Color.green(),
     )
     embed.add_field(name="Minimalna stawka", value=f"{BETTING_MIN_STAKE} pkt", inline=True)
-    embed.add_field(name="Kanał", value=f"<#{BETTING_CHANNEL_ID}>", inline=True)
+    panel_channel_id = get_betting_panel_channel_id(guild.id) or BETTING_CHANNEL_ID
+    embed.add_field(name="Kanał", value=f"<#{panel_channel_id}>", inline=True)
 
     if not rows:
         embed.add_field(name="Otwarte mecze", value="Aktualnie brak otwartych meczów do obstawiania.", inline=False)
@@ -2100,7 +2110,7 @@ def betting_panel_embed(guild: discord.Guild) -> discord.Embed:
         field_name = "Otwarte mecze" if idx == 1 else f"Otwarte mecze {idx}"
         embed.add_field(name=field_name, value=chunk, inline=False)
 
-    embed.set_footer(text="Panel aktualizuje się automatycznie rzadziej, aby uniknąć limitów Discorda.")
+    embed.set_footer(text="Bot sam tworzy kanały obstawiania i aktualizuje panel automatycznie.")
     return embed
 
 def typer_ranking_embed(guild: discord.Guild) -> discord.Embed:
@@ -2487,6 +2497,7 @@ class XPBot(commands.Bot):
         super().__init__(command_prefix="!", intents=intents)
         self.vc_active_since: dict[tuple[int, int], float] = {}
         self.panel_refresh_cache: dict[tuple[int, str], float] = {}
+        self.betting_system_channels: dict[int, dict[str, int]] = {}
 
     async def setup_hook(self) -> None:
         self.add_view(ShopView(self))
@@ -2709,7 +2720,7 @@ def xpinfo_embed() -> discord.Embed:
     embed.add_field(name="🛡️ System kar", value=f"AutoMod daje warny. 1 = ostrzeżenie, 10 = kick, 20 = ban. Co {AUTOMOD_WARN_DECAY_HOURS}h bez przewinień schodzi 1 warn.", inline=False)
     embed.add_field(name="🔗 Linki", value="Discord invite = natychmiastowy ban. TikTok / YouTube / Kick / skrócone linki = usunięcie + warn.", inline=False)
     embed.add_field(name="⚙️ Panel moderacji", value="Użyj `/panel_moderacji`, `/moderacja_on`, `/moderacja_off`, `/status_moderacji`.", inline=False)
-    embed.add_field(name="🎯 Obstawianie", value=f"Panel meczów działa w <#{BETTING_CHANNEL_ID}>. Użyj `/panel_obstawiania`. Dostępny też **dokładny wynik**.", inline=False)
+    embed.add_field(name="🎯 Obstawianie", value="Bot sam tworzy kategorię i kanały obstawiania. Użyj `/panel_obstawiania`. Dostępny też **dokładny wynik**.", inline=False)
     embed.add_field(name="⚽ Auto mecze", value="Bot może pobierać mecze z football-data.org i sam aktualizować panel. Użyj `/sync_mecze_auto`.", inline=False)
     embed.add_field(name="🏆 Typerzy i LIVE", value="Masz `/ranking_typerow`, `/moje_staty_typerskie` i panel LIVE wyników. Dla mniejszych limitów ustaw osobny `BETTING_LIVE_CHANNEL_ID`.", inline=False)
     embed.add_field(name="❌ Punkty VC nie lecą gdy", value="bot / mute / deaf / kanał AFK", inline=False)
@@ -2816,7 +2827,9 @@ async def ensure_panel_message(
     embed: discord.Embed,
     view: Optional[discord.ui.View] = None
 ) -> None:
-    channel_id = PANEL_CHANNELS[panel_key]
+    channel_id = get_runtime_panel_channel_id(guild.id, panel_key)
+    if channel_id is None:
+        return
     channel = guild.get_channel(channel_id)
 
     if channel is None or not isinstance(channel, discord.TextChannel):
@@ -3499,6 +3512,11 @@ async def on_ready():
             if is_active_for_vc(member):
                 bot.vc_active_since[(guild.id, member.id)] = time.time()
 
+        try:
+            await ensure_betting_system_channels(guild)
+        except Exception as e:
+            print(f"⚠️ Błąd tworzenia kanałów obstawiania dla {guild.name}: {e}")
+
         if AUTO_FETCH_MATCHES_ENABLED and FOOTBALL_DATA_API_KEY:
             try:
                 created, updated = await asyncio.to_thread(sync_auto_matches_for_guild, guild)
@@ -3684,6 +3702,39 @@ async def skrzynki_historia(interaction: discord.Interaction):
     history = get_last_crate_history(interaction.guild.id, interaction.user.id, 5)
     await safe_interaction_send(interaction, embed=crate_history_embed(interaction.user, history), ephemeral=True)
 
+
+@bot.tree.command(name="setup_obstawianie_auto", description="Tworzy lub naprawia automatycznie kategorię i kanały obstawiania")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def setup_obstawianie_auto(interaction: discord.Interaction):
+    if interaction.guild is None:
+        await safe_interaction_send(interaction, content="Ta komenda działa tylko na serwerze.", ephemeral=True)
+        return
+
+    created = await ensure_betting_system_channels(interaction.guild)
+    await refresh_betting_panel(interaction.guild, force=True)
+    await refresh_live_results_panel(interaction.guild, force=True)
+    panel_id = created.get("betting")
+    live_id = created.get("betting_live")
+    bets_id = created.get("betting_bets")
+    ranking_id = created.get("betting_ranking")
+    stats_id = created.get("betting_stats")
+
+    embed = discord.Embed(title="✅ System obstawiania gotowy", color=discord.Color.green())
+    embed.add_field(name="Kategoria", value=BETTING_CATEGORY_NAME, inline=False)
+    embed.add_field(
+        name="Kanały",
+        value=(
+            f"Panel: <#{panel_id}>\n"
+            f"Live: <#{live_id}>\n"
+            f"Typy: <#{bets_id}>\n"
+            f"Ranking: <#{ranking_id}>\n"
+            f"Staty: <#{stats_id}>"
+        ),
+        inline=False
+    )
+    await safe_interaction_send(interaction, embed=embed, ephemeral=True)
+
+
 @bot.tree.command(name="panel_moderacji", description="Premium panel włączania i wyłączania moderacji czata")
 @app_commands.checks.has_permissions(manage_guild=True)
 async def panel_moderacji(interaction: discord.Interaction):
@@ -3835,8 +3886,9 @@ async def panel_obstawiania(interaction: discord.Interaction):
         await safe_interaction_send(interaction, content="Ta komenda działa tylko na serwerze.", ephemeral=True)
         return
 
-    if interaction.channel_id != BETTING_CHANNEL_ID:
-        await safe_interaction_send(interaction, content=f"❌ Panel obstawiania ustawiaj tylko w kanale <#{BETTING_CHANNEL_ID}>.", ephemeral=True)
+    panel_channel_id = get_betting_panel_channel_id(interaction.guild.id)
+    if panel_channel_id is not None and interaction.channel_id != panel_channel_id:
+        await safe_interaction_send(interaction, content=f"❌ Panel obstawiania ustawiaj tylko w kanale <#{panel_channel_id}>.", ephemeral=True)
         return
 
     await refresh_betting_panel(interaction.guild)
@@ -3926,8 +3978,9 @@ async def obstaw(interaction: discord.Interaction, mecz_id: int, typ: str, stawk
         await safe_interaction_send(interaction, content="Ta komenda działa tylko na serwerze.", ephemeral=True)
         return
 
-    if interaction.channel_id != BETTING_CHANNEL_ID:
-        await safe_interaction_send(interaction, content=f"❌ Obstawianie działa tylko w kanale <#{BETTING_CHANNEL_ID}>.", ephemeral=True)
+    bets_channel_id = get_betting_bets_channel_id(interaction.guild.id) or get_betting_panel_channel_id(interaction.guild.id)
+    if bets_channel_id is not None and interaction.channel_id != bets_channel_id:
+        await safe_interaction_send(interaction, content=f"❌ Obstawianie działa tylko w kanale <#{bets_channel_id}>.", ephemeral=True)
         return
 
     pick = typ.upper().strip()
@@ -3995,8 +4048,9 @@ async def obstaw_dokladny_wynik(interaction: discord.Interaction, mecz_id: int, 
         await safe_interaction_send(interaction, content="Ta komenda działa tylko na serwerze.", ephemeral=True)
         return
 
-    if interaction.channel_id != BETTING_CHANNEL_ID:
-        await safe_interaction_send(interaction, content=f"❌ Obstawianie działa tylko w kanale <#{BETTING_CHANNEL_ID}>.", ephemeral=True)
+    bets_channel_id = get_betting_bets_channel_id(interaction.guild.id) or get_betting_panel_channel_id(interaction.guild.id)
+    if bets_channel_id is not None and interaction.channel_id != bets_channel_id:
+        await safe_interaction_send(interaction, content=f"❌ Obstawianie działa tylko w kanale <#{bets_channel_id}>.", ephemeral=True)
         return
 
     if gole_gospodarzy < 0 or gole_gosci < 0:
