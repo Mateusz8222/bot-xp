@@ -2177,6 +2177,107 @@ def user_typer_stats_embed(guild: discord.Guild, user_id: int) -> discord.Embed:
     return embed
 
 
+def betting_stats_panel_embed(guild: discord.Guild) -> discord.Embed:
+    top_rows = get_top_typers(guild.id, 3)
+    embed = discord.Embed(
+        title="📊 Profil graczy PRO",
+        description="Tutaj masz najważniejsze statystyki typerów. Użyj `/moje_staty_typerskie`, żeby zobaczyć swój pełny profil.",
+        color=discord.Color.blurple()
+    )
+
+    if not top_rows:
+        embed.add_field(name="Status", value="Brak statystyk graczy do pokazania.", inline=False)
+        return embed
+
+    medals = ["🥇", "🥈", "🥉"]
+    lines = []
+    for idx, row in enumerate(top_rows):
+        member = guild.get_member(int(row["user_id"]))
+        if member is None or member.bot:
+            continue
+
+        total_bets = int(row["total_bets"])
+        wins = int(row["wins"])
+        total_staked = int(row["total_staked"])
+        total_won = int(row["total_won"])
+        hit_rate = (wins / total_bets * 100.0) if total_bets > 0 else 0.0
+        roi = (((total_won - total_staked) / total_staked) * 100.0) if total_staked > 0 else 0.0
+
+        lines.append(
+            f"{medals[idx]} **{member.display_name}**\n"
+            f"Zakłady: **{total_bets}** | Winrate: **{hit_rate:.1f}%** | ROI: **{roi:.1f}%**\n"
+            f"Najlepsza seria: **{int(row['best_streak'])}** | Wygrane pkt: **{total_won}**"
+        )
+
+    embed.add_field(name="Top 3 typerów", value="\n\n".join(lines) if lines else "Brak danych.", inline=False)
+    embed.add_field(name="Komendy", value="`/moje_staty_typerskie` • `/ranking_typerow` • `/moje_typy`", inline=False)
+    return embed
+
+
+def betting_ranking_panel_embed(guild: discord.Guild) -> discord.Embed:
+    rows = get_top_typers(guild.id, 10)
+    embed = discord.Embed(
+        title="🥇 Ranking typerów",
+        description="Najlepsi typerzy na serwerze według wygranych punktów, skuteczności i serii.",
+        color=discord.Color.gold()
+    )
+
+    if not rows:
+        embed.description = "Brak statystyk typerów."
+        return embed
+
+    chunks = []
+    current = ""
+    pos = 1
+    for row in rows:
+        member = guild.get_member(int(row["user_id"]))
+        if member is None or member.bot:
+            continue
+
+        total_bets = int(row["total_bets"])
+        wins = int(row["wins"])
+        total_staked = int(row["total_staked"])
+        total_won = int(row["total_won"])
+        hit_rate = (wins / total_bets * 100.0) if total_bets > 0 else 0.0
+        roi = (((total_won - total_staked) / total_staked) * 100.0) if total_staked > 0 else 0.0
+
+        line = (
+            f"**{pos}. {member.display_name}**\n"
+            f"Zakłady: **{total_bets}** | Winrate: **{hit_rate:.1f}%** | ROI: **{roi:.1f}%**\n"
+            f"Wygrane pkt: **{total_won}** | Seria: **{int(row['best_streak'])}**"
+        )
+
+        block = line if not current else "\n\n" + line
+        if len(current) + len(block) > 1000:
+            chunks.append(current)
+            current = line
+        else:
+            current += block
+        pos += 1
+
+    if current:
+        chunks.append(current)
+
+    for idx, chunk in enumerate(chunks, start=1):
+        embed.add_field(name="Ranking" if idx == 1 else f"Ranking {idx}", value=chunk, inline=False)
+
+    return embed
+
+
+def betting_bets_panel_embed(guild: discord.Guild) -> discord.Embed:
+    panel_channel_id = get_betting_panel_channel_id(guild.id)
+    embed = discord.Embed(
+        title="🧾 Typy i kupony",
+        description="Tutaj obstawiasz mecze komendami oraz przeglądasz swoje kupony.",
+        color=discord.Color.green()
+    )
+    if panel_channel_id:
+        embed.add_field(name="Panel główny", value=f"Wejdź do <#{panel_channel_id}> aby wybrać mecz i typ.", inline=False)
+    embed.add_field(name="Komendy", value="`/obstaw` • `/obstaw_dokladny_wynik` • `/moje_typy`", inline=False)
+    embed.add_field(name="Minimalna stawka", value=f"{BETTING_MIN_STAKE} pkt", inline=False)
+    return embed
+
+
 def live_results_embed(guild: discord.Guild) -> discord.Embed:
     rows = list_betting_matches(guild.id, status=None, limit=30)
     embed = discord.Embed(title="🔴 Live wyniki meczów", color=discord.Color.red())
@@ -2722,7 +2823,7 @@ def xpinfo_embed() -> discord.Embed:
     embed.add_field(name="⚙️ Panel moderacji", value="Użyj `/panel_moderacji`, `/moderacja_on`, `/moderacja_off`, `/status_moderacji`.", inline=False)
     embed.add_field(name="🎯 Obstawianie", value="Bot sam tworzy kategorię i kanały obstawiania. Użyj `/panel_obstawiania`. Dostępny też **dokładny wynik**.", inline=False)
     embed.add_field(name="⚽ Auto mecze", value="Bot może pobierać mecze z football-data.org i sam aktualizować panel. Użyj `/sync_mecze_auto`.", inline=False)
-    embed.add_field(name="🏆 Typerzy i LIVE", value="Masz `/ranking_typerow`, `/moje_staty_typerskie` i panel LIVE wyników. Dla mniejszych limitów ustaw osobny `BETTING_LIVE_CHANNEL_ID`.", inline=False)
+    embed.add_field(name="🏆 Typerzy i LIVE", value="Masz `/ranking_typerow`, `/moje_staty_typerskie`, `/profil_typera` i panel LIVE wyników.", inline=False)
     embed.add_field(name="❌ Punkty VC nie lecą gdy", value="bot / mute / deaf / kanał AFK", inline=False)
     return embed
 
@@ -2818,7 +2919,7 @@ def crate_history_embed(member: discord.Member, history: list[dict]) -> discord.
 
 
 def get_runtime_panel_channel_id(guild_id: int, panel_key: str) -> int | None:
-    if panel_key in {"betting", "betting_live"}:
+    if panel_key in {"betting", "betting_live", "betting_bets", "betting_ranking", "betting_stats"}:
         channel_map = bot.betting_system_channels.get(guild_id, {})
         return channel_map.get(panel_key)
     return PANEL_CHANNELS.get(panel_key)
@@ -2913,6 +3014,9 @@ async def refresh_all_panels(guild: discord.Guild) -> None:
     await ensure_panel_message(guild, "shop", shop_embed(), ShopView(bot))
     await ensure_panel_message(guild, "betting", betting_panel_embed(guild), BettingPanelView(guild.id))
     await ensure_panel_message(guild, "betting_live", live_results_embed(guild), None)
+    await ensure_panel_message(guild, "betting_bets", betting_bets_panel_embed(guild), None)
+    await ensure_panel_message(guild, "betting_ranking", betting_ranking_panel_embed(guild), None)
+    await ensure_panel_message(guild, "betting_stats", betting_stats_panel_embed(guild), None)
 
 async def process_shop_purchase(interaction: discord.Interaction, item_name: str) -> None:
     if interaction.guild is None:
@@ -3909,6 +4013,15 @@ async def ranking_typerow(interaction: discord.Interaction):
         await safe_interaction_send(interaction, content="Ta komenda działa tylko na serwerze.", ephemeral=True)
         return
     await safe_interaction_send(interaction, embed=typer_ranking_embed(interaction.guild))
+
+
+@bot.tree.command(name="profil_typera", description="Pokazuje profil typerski wybranego użytkownika")
+@app_commands.describe(uzytkownik="Użytkownik do sprawdzenia")
+async def profil_typera(interaction: discord.Interaction, uzytkownik: discord.Member):
+    if interaction.guild is None:
+        await safe_interaction_send(interaction, content="Ta komenda działa tylko na serwerze.", ephemeral=True)
+        return
+    await safe_interaction_send(interaction, embed=user_typer_stats_embed(interaction.guild, uzytkownik.id))
 
 
 @bot.tree.command(name="moje_staty_typerskie", description="Pokazuje Twoje statystyki obstawiania")
