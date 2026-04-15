@@ -2816,6 +2816,56 @@ def crate_history_embed(member: discord.Member, history: list[dict]) -> discord.
     embed.description = "\n".join(lines)
     return embed
 
+
+def get_runtime_panel_channel_id(guild_id: int, panel_key: str) -> int | None:
+    if panel_key in {"betting", "betting_live"}:
+        channel_map = bot.betting_system_channels.get(guild_id, {})
+        return channel_map.get(panel_key)
+    return PANEL_CHANNELS.get(panel_key)
+
+
+def get_betting_panel_channel_id(guild_id: int) -> int | None:
+    channel_map = bot.betting_system_channels.get(guild_id, {})
+    return channel_map.get("betting")
+
+
+def get_betting_live_channel_id(guild_id: int) -> int | None:
+    channel_map = bot.betting_system_channels.get(guild_id, {})
+    return channel_map.get("betting_live")
+
+
+def get_betting_bets_channel_id(guild_id: int) -> int | None:
+    channel_map = bot.betting_system_channels.get(guild_id, {})
+    return channel_map.get("betting_bets")
+
+
+async def ensure_betting_system_channels(guild: discord.Guild) -> dict[str, int]:
+    category = discord.utils.get(guild.categories, name=BETTING_CATEGORY_NAME)
+    if category is None:
+        category = await guild.create_category(BETTING_CATEGORY_NAME)
+
+    created: dict[str, int] = {}
+
+    for key, channel_name in BETTING_AUTO_CHANNELS.items():
+        channel = discord.utils.get(guild.text_channels, name=channel_name)
+        if channel is None:
+            channel = await guild.create_text_channel(
+                name=channel_name,
+                category=category,
+                reason="Automatyczne tworzenie kanałów obstawiania",
+            )
+        elif channel.category != category:
+            try:
+                await channel.edit(category=category, reason="Naprawa kategorii systemu obstawiania")
+            except discord.HTTPException:
+                pass
+
+        created[key] = channel.id
+
+    bot.betting_system_channels[guild.id] = created
+    return created
+
+
 def choose_crate_reward(crate_key: str) -> dict:
     rewards = CRATE_CONFIG[crate_key]["rewards"]
     weights = [reward["weight"] for reward in rewards]
