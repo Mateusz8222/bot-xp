@@ -2024,10 +2024,26 @@ def betting_panel_embed(guild: discord.Guild) -> discord.Embed:
             f"Liga: **{row.get('competition_name') or row.get('competition_code') or 'Ręczny mecz'}** | Start: <t:{int(row['start_ts'])}:R>\n"
             f"Kursy: **1 {float(row['odds_home']):.2f} / X {float(row['odds_draw']):.2f} / 2 {float(row['odds_away']):.2f}**"
         )
-    embed.add_field(name="Otwarte mecze", value="\n\n".join(lines), inline=False)
+
+    chunks = []
+    current = ""
+    for line in lines:
+        block = line if not current else "\n\n" + line
+        if len(current) + len(block) > 1000:
+            if current:
+                chunks.append(current)
+            current = line
+        else:
+            current += block
+    if current:
+        chunks.append(current)
+
+    for idx, chunk in enumerate(chunks, start=1):
+        field_name = "Otwarte mecze" if idx == 1 else f"Otwarte mecze {idx}"
+        embed.add_field(name=field_name, value=chunk, inline=False)
+
     embed.set_footer(text="Panel aktualizuje się automatycznie rzadziej, aby uniknąć limitów Discorda.")
     return embed
-
 
 def typer_ranking_embed(guild: discord.Guild) -> discord.Embed:
     rows = get_top_typers(guild.id, 10)
@@ -2058,7 +2074,8 @@ def typer_ranking_embed(guild: discord.Guild) -> discord.Embed:
         )
         pos += 1
 
-    embed.description = "\n\n".join(lines) if lines else "Brak statystyk typerów."
+    desc = "\n\n".join(lines) if lines else "Brak statystyk typerów."
+    embed.description = desc[:4000]
     return embed
 
 
@@ -2131,7 +2148,8 @@ def live_results_embed(guild: discord.Guild) -> discord.Embed:
             )
         embed.add_field(name="Ostatnio zakończone", value="\n".join(tail), inline=False)
 
-    embed.description = "\n\n".join(lines) if lines else "Brak aktywnych lub nadchodzących meczów."
+    desc = "\n\n".join(lines) if lines else "Brak aktywnych lub nadchodzących meczów."
+    embed.description = desc[:4000]
     return embed
 
 
