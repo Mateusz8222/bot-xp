@@ -1253,6 +1253,30 @@ def normalize_api_result_to_pick(winner: str | None) -> str | None:
     return None
 
 
+def derive_result_from_scores(home_score, away_score) -> str | None:
+    if home_score is None or away_score is None:
+        return None
+    if int(home_score) > int(away_score):
+        return "1"
+    if int(home_score) == int(away_score):
+        return "X"
+    return "2"
+
+
+def extract_api_final_scores(item: dict) -> tuple[int | None, int | None]:
+    score = (item.get("score") or {})
+    for key in ("fullTime", "extraTime", "regularTime", "penalties", "halfTime"):
+        block = score.get(key) or {}
+        home_raw = block.get("home")
+        away_raw = block.get("away")
+        if home_raw is not None and away_raw is not None:
+            try:
+                return int(home_raw), int(away_raw)
+            except Exception:
+                continue
+    return None, None
+
+
 def map_api_status_to_local(status: str, start_ts: int) -> str:
     status = (status or "").upper()
 
@@ -1427,11 +1451,7 @@ def sync_auto_matches_for_guild(guild: discord.Guild) -> tuple[int, int]:
             live_status = api_status or "SCHEDULED"
             local_status = map_api_status_to_local(api_status, start_ts)
 
-            full_time = (item.get("score") or {}).get("fullTime") or {}
-            home_score_raw = full_time.get("home")
-            away_score_raw = full_time.get("away")
-            home_score = int(home_score_raw) if home_score_raw is not None else None
-            away_score = int(away_score_raw) if away_score_raw is not None else None
+            home_score, away_score = extract_api_final_scores(item)
 
             existing = get_match_by_external_id(guild.id, ext_id)
             if existing is None:
@@ -1463,6 +1483,9 @@ def sync_auto_matches_for_guild(guild: discord.Guild) -> tuple[int, int]:
 
             # rozlicz po zakończeniu
             result_pick = normalize_api_result_to_pick(((item.get("score") or {}).get("winner")))
+            if result_pick is None:
+                result_pick = derive_result_from_scores(home_score, away_score)
+
             if api_status in {"FINISHED", "AWARDED"} and result_pick and existing["status"] != "settled":
                 try:
                     update_match_scores_and_status(guild.id, int(existing["match_id"]), home_score, away_score, live_status, "settled")
@@ -2104,10 +2127,17 @@ def my_bets_embed(rows: list[dict]) -> discord.Embed:
     lines = []
     for row in rows[:10]:
         result_txt = f" | wynik: {row['result']}" if row.get("result") else ""
+        status_label = row["status"]
+        if status_label == "open":
+            status_label = "otwarte"
+        elif status_label == "closed":
+            status_label = "zamknięte"
+        elif status_label == "settled":
+            status_label = "rozliczone"
         lines.append(
             f"**#{row['match_id']}** | {row['home_team']} vs {row['away_team']} | "
             f"typ: **{format_pick_label(row['pick'])}** | stawka: **{row['stake']} pkt** | "
-            f"wygrana: **{row['potential_win']} pkt** | status: **{row['status']}**{result_txt}"
+            f"wygrana: **{row['potential_win']} pkt** | status: **{status_label}**{result_txt}"
         )
     embed.description = "\n".join(lines)
     return embed
@@ -2375,7 +2405,6 @@ def betting_bets_panel_embed(guild: discord.Guild) -> discord.Embed:
         embed.add_field(name="Panel główny", value=f"Wejdź do <#{panel_channel_id}> aby wybrać mecz i typ.", inline=False)
     embed.add_field(name="Komendy", value="`/obstaw` • `/obstaw_dokladny_wynik` • `/moje_typy` • `/moje_staty_typerskie`", inline=False)
     embed.add_field(name="Minimalna stawka", value=f"{BETTING_MIN_STAKE} pkt", inline=False)
-    embed.add_field(name="Punkty", value="Stawka schodzi przy obstawieniu. Po wygranej bot dopisuje wygraną liczbę punktów, po przegranej stawka przepada.", inline=False)
     embed.add_field(name="Punkty", value="Stawka schodzi przy obstawieniu. Po wygranej bot dopisuje wygraną liczbę punktów, po przegranej stawka przepada.", inline=False)
     return embed
 
