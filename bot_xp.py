@@ -2066,6 +2066,10 @@ def betting_match_embed(match_row: dict) -> discord.Embed:
     if live_status in {"TIMED", "SCHEDULED", "POSTPONED"} and match_row["status"] == "open":
         score_txt = "brak"
     else:
+        live_status = str(match_row.get("live_status") or "")
+    if live_status in {"TIMED", "SCHEDULED", "POSTPONED"} and match_row["status"] == "open":
+        score_txt = "brak"
+    else:
         score_txt = f"{int(match_row.get('home_score') or 0)} : {int(match_row.get('away_score') or 0)}"
     embed.add_field(name="Wynik", value=score_txt, inline=True)
     embed.add_field(name="Status", value=status_map.get(match_row["status"], str(match_row["status"])), inline=True)
@@ -2371,6 +2375,7 @@ def betting_bets_panel_embed(guild: discord.Guild) -> discord.Embed:
         embed.add_field(name="Panel główny", value=f"Wejdź do <#{panel_channel_id}> aby wybrać mecz i typ.", inline=False)
     embed.add_field(name="Komendy", value="`/obstaw` • `/obstaw_dokladny_wynik` • `/moje_typy` • `/moje_staty_typerskie`", inline=False)
     embed.add_field(name="Minimalna stawka", value=f"{BETTING_MIN_STAKE} pkt", inline=False)
+    embed.add_field(name="Punkty", value="Stawka schodzi przy obstawieniu. Po wygranej bot dopisuje wygraną liczbę punktów, po przegranej stawka przepada.", inline=False)
     embed.add_field(name="Punkty", value="Stawka schodzi przy obstawieniu. Po wygranej bot dopisuje wygraną liczbę punktów, po przegranej stawka przepada.", inline=False)
     return embed
 
@@ -3826,6 +3831,7 @@ async def auto_fetch_matches_loop():
             await asyncio.to_thread(sync_auto_matches_for_guild, guild)
             await refresh_betting_panel(guild)
             await refresh_live_results_panel(guild)
+            await refresh_betting_side_panels(guild)
             await refresh_betting_side_panels(guild)
         except Exception:
             pass
