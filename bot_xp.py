@@ -2466,7 +2466,7 @@ async def process_shop_purchase(interaction: discord.Interaction, item_name: str
 # GUI
 # =========================================================
 class PointsView(discord.ui.View):
-    def __init__(self, bot_instance: XPBot):
+    def __init__(self, bot_instance):
         super().__init__(timeout=None)
         self.bot = bot_instance
 
@@ -2485,7 +2485,7 @@ class PointsView(discord.ui.View):
         await safe_interaction_send(interaction, embed=points_embed_for_user(member, row), ephemeral=True)
 
 class RankingView(discord.ui.View):
-    def __init__(self, bot_instance: XPBot):
+    def __init__(self, bot_instance):
         super().__init__(timeout=None)
         self.bot = bot_instance
 
@@ -2498,7 +2498,7 @@ class RankingView(discord.ui.View):
         await safe_interaction_send(interaction, embed=ranking_embed(interaction.guild), ephemeral=True)
 
 class XpInfoView(discord.ui.View):
-    def __init__(self, bot_instance: XPBot):
+    def __init__(self, bot_instance):
         super().__init__(timeout=None)
         self.bot = bot_instance
 
@@ -2516,7 +2516,7 @@ class XpInfoView(discord.ui.View):
         await safe_interaction_send(interaction, embed=crate_history_embed(interaction.user, history), ephemeral=True)
 
 class ShopView(discord.ui.View):
-    def __init__(self, bot_instance: XPBot):
+    def __init__(self, bot_instance):
         super().__init__(timeout=None)
         self.bot = bot_instance
 
