@@ -3974,6 +3974,8 @@ async def setup_obstawianie_auto(interaction: discord.Interaction):
         await safe_interaction_send(interaction, content="Ta komenda działa tylko na serwerze.", ephemeral=True)
         return
 
+    await interaction.response.defer(ephemeral=True)
+
     created = await ensure_betting_system_channels(interaction.guild)
     await refresh_betting_panel(interaction.guild, force=True)
     await refresh_live_results_panel(interaction.guild, force=True)
@@ -4104,6 +4106,8 @@ async def sync_mecze_auto(interaction: discord.Interaction):
         await safe_interaction_send(interaction, content="Ta komenda działa tylko na serwerze.", ephemeral=True)
         return
 
+    await interaction.response.defer(ephemeral=True)
+
     if not FOOTBALL_DATA_API_KEY:
         await safe_interaction_send(interaction, content="❌ Brak FOOTBALL_DATA_API_KEY w Railway / env.", ephemeral=True)
         return
@@ -4159,6 +4163,8 @@ async def panel_obstawiania(interaction: discord.Interaction):
     if interaction.guild is None:
         await safe_interaction_send(interaction, content="Ta komenda działa tylko na serwerze.", ephemeral=True)
         return
+
+    await interaction.response.defer(ephemeral=True)
 
     panel_channel_id = get_betting_panel_channel_id(interaction.guild.id)
     if panel_channel_id is not None and interaction.channel_id != panel_channel_id:
@@ -4493,6 +4499,8 @@ async def odswiez_panele(interaction: discord.Interaction):
     if interaction.guild is None:
         await safe_interaction_send(interaction, content="Ta komenda działa tylko na serwerze.", ephemeral=True)
         return
+
+    await interaction.response.defer(ephemeral=True)
 
     await refresh_all_panels(interaction.guild)
     await safe_interaction_send(interaction, content="✅ Panele zostały odświeżone.", ephemeral=True)
