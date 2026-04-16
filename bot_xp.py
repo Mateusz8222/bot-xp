@@ -1162,10 +1162,10 @@ def update_match_scores_and_status(guild_id: int, match_id: int, home_score, awa
         FROM betting_matches
         WHERE guild_id = ? AND match_id = ?
     """), (guild_id, match_id))
-    current = fetchone_dict(cur) or {"home_score": 0, "away_score": 0}
+    current = fetchone_dict(cur) or {"home_score": None, "away_score": None}
 
-    final_home = int(home_score) if home_score is not None else int(current.get("home_score") or 0)
-    final_away = int(away_score) if away_score is not None else int(current.get("away_score") or 0)
+    final_home = int(home_score) if home_score is not None else current.get("home_score")
+    final_away = int(away_score) if away_score is not None else current.get("away_score")
 
     cur.execute(sql("""
         UPDATE betting_matches
@@ -1276,7 +1276,6 @@ def extract_api_final_scores(item: dict) -> tuple[int | None, int | None]:
                 continue
     return None, None
 
-
 def map_api_status_to_local(status: str, start_ts: int) -> str:
     status = (status or "").upper()
 
@@ -1325,12 +1324,12 @@ def create_auto_betting_match(
                 source, external_id, auto_created, competition_code, competition_name,
                 home_score, away_score, live_status
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, 'open', NULL, %s, %s, %s, %s, %s, %s, %s, 0, 0, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, 'open', NULL, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING match_id
         """, (
             guild_id, home_team, away_team, int(start_ts),
             odds_home, odds_draw, odds_away,
-            0, now_ts, "football-data", external_id, 1, competition_code, competition_name, "SCHEDULED"
+            0, now_ts, "football-data", external_id, 1, competition_code, competition_name, None, None, "SCHEDULED"
         ))
         row = cur.fetchone()
         match_id = int(row["match_id"]) if isinstance(row, dict) else int(row[0])
@@ -1343,11 +1342,11 @@ def create_auto_betting_match(
                 source, external_id, auto_created, competition_code, competition_name,
                 home_score, away_score, live_status
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, 'open', NULL, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'open', NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             guild_id, home_team, away_team, int(start_ts),
             odds_home, odds_draw, odds_away,
-            0, now_ts, "football-data", external_id, 1, competition_code, competition_name, "SCHEDULED"
+            0, now_ts, "football-data", external_id, 1, competition_code, competition_name, None, None, "SCHEDULED"
         ))
         match_id = int(cur.lastrowid)
 
@@ -1379,10 +1378,10 @@ def update_auto_betting_match(
         FROM betting_matches
         WHERE guild_id = ? AND match_id = ?
     """), (guild_id, match_id))
-    current = fetchone_dict(cur) or {"home_score": 0, "away_score": 0}
+    current = fetchone_dict(cur) or {"home_score": None, "away_score": None}
 
-    final_home = int(home_score) if home_score is not None else int(current.get("home_score") or 0)
-    final_away = int(away_score) if away_score is not None else int(current.get("away_score") or 0)
+    final_home = int(home_score) if home_score is not None else current.get("home_score")
+    final_away = int(away_score) if away_score is not None else current.get("away_score")
 
     cur.execute(sql("""
         UPDATE betting_matches
@@ -1483,9 +1482,6 @@ def sync_auto_matches_for_guild(guild: discord.Guild) -> tuple[int, int]:
 
             # rozlicz po zakończeniu
             result_pick = normalize_api_result_to_pick(((item.get("score") or {}).get("winner")))
-            if result_pick is None:
-                result_pick = derive_result_from_scores(home_score, away_score)
-
             if api_status in {"FINISHED", "AWARDED"} and result_pick and existing["status"] != "settled":
                 try:
                     update_match_scores_and_status(guild.id, int(existing["match_id"]), home_score, away_score, live_status, "settled")
@@ -1495,6 +1491,40 @@ def sync_auto_matches_for_guild(guild: discord.Guild) -> tuple[int, int]:
                     pass
 
     return created, updated
+
+
+def auto_settle_scored_matches_for_guild(guild_id: int) -> tuple[int, int]:
+    now_ts = int(time.time())
+    conn = db_connect()
+    cur = conn.cursor()
+    cur.execute(sql("""
+        SELECT *
+        FROM betting_matches
+        WHERE guild_id = ?
+          AND status != 'settled'
+          AND start_ts <= ?
+          AND home_score IS NOT NULL
+          AND away_score IS NOT NULL
+        ORDER BY start_ts ASC
+    """), (guild_id, now_ts - 7200))
+    rows = [dict(row) for row in cur.fetchall()]
+    conn.close()
+
+    settled_count = 0
+    total_paid = 0
+
+    for row in rows:
+        result = derive_result_from_scores(row.get("home_score"), row.get("away_score"))
+        if not result:
+            continue
+        try:
+            winners, paid = settle_betting_match(guild_id, int(row["match_id"]), result)
+            settled_count += 1
+            total_paid += int(paid)
+        except Exception:
+            pass
+
+    return settled_count, total_paid
 
 
 def get_top_users(guild_id: int, limit: int = 10) -> list[dict]:
@@ -2127,17 +2157,10 @@ def my_bets_embed(rows: list[dict]) -> discord.Embed:
     lines = []
     for row in rows[:10]:
         result_txt = f" | wynik: {row['result']}" if row.get("result") else ""
-        status_label = row["status"]
-        if status_label == "open":
-            status_label = "otwarte"
-        elif status_label == "closed":
-            status_label = "zamknięte"
-        elif status_label == "settled":
-            status_label = "rozliczone"
         lines.append(
             f"**#{row['match_id']}** | {row['home_team']} vs {row['away_team']} | "
             f"typ: **{format_pick_label(row['pick'])}** | stawka: **{row['stake']} pkt** | "
-            f"wygrana: **{row['potential_win']} pkt** | status: **{status_label}**{result_txt}"
+            f"wygrana: **{row['potential_win']} pkt** | status: **{row['status']}**{result_txt}"
         )
     embed.description = "\n".join(lines)
     return embed
@@ -2405,7 +2428,7 @@ def betting_bets_panel_embed(guild: discord.Guild) -> discord.Embed:
         embed.add_field(name="Panel główny", value=f"Wejdź do <#{panel_channel_id}> aby wybrać mecz i typ.", inline=False)
     embed.add_field(name="Komendy", value="`/obstaw` • `/obstaw_dokladny_wynik` • `/moje_typy` • `/moje_staty_typerskie`", inline=False)
     embed.add_field(name="Minimalna stawka", value=f"{BETTING_MIN_STAKE} pkt", inline=False)
-    embed.add_field(name="Punkty", value="Stawka schodzi przy obstawieniu. Po wygranej bot dopisuje wygraną liczbę punktów, po przegranej stawka przepada.", inline=False)
+    embed.add_field(name="Punkty", value="Wybierasz mecz i typ. Stawka schodzi przy obstawieniu. Za poprawny typ bot przydziela wygraną liczbę punktów, za zły typ stawka przepada.", inline=False)
     return embed
 
 
@@ -3824,7 +3847,8 @@ async def on_ready():
         if AUTO_FETCH_MATCHES_ENABLED and FOOTBALL_DATA_API_KEY:
             try:
                 created, updated = await asyncio.to_thread(sync_auto_matches_for_guild, guild)
-                print(f"⚽ Auto-sync {guild.name}: dodano {created}, zaktualizowano {updated}")
+                settled_count, _ = await asyncio.to_thread(auto_settle_scored_matches_for_guild, guild.id)
+                print(f"⚽ Auto-sync {guild.name}: dodano {created}, zaktualizowano {updated}, rozliczono {settled_count}")
             except Exception as e:
                 print(f"⚠️ Błąd auto-sync dla {guild.name}: {e}")
 
@@ -3858,6 +3882,7 @@ async def auto_fetch_matches_loop():
     for guild in bot.guilds:
         try:
             await asyncio.to_thread(sync_auto_matches_for_guild, guild)
+            await asyncio.to_thread(auto_settle_scored_matches_for_guild, guild.id)
             await refresh_betting_panel(guild)
             await refresh_live_results_panel(guild)
             await refresh_betting_side_panels(guild)
@@ -4140,6 +4165,24 @@ async def reset_warnow(interaction: discord.Interaction, uzytkownik: discord.Mem
     await safe_interaction_send(interaction, content=f"✅ Zresetowano warny użytkownika {uzytkownik.mention}.", ephemeral=True)
 
 
+
+
+@bot.tree.command(name="auto_rozlicz_mecze", description="Wymusza auto rozliczenie zakończonych meczów z zapisanym wynikiem")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def auto_rozlicz_mecze(interaction: discord.Interaction):
+    if interaction.guild is None:
+        await safe_interaction_send(interaction, content="Ta komenda działa tylko na serwerze.", ephemeral=True)
+        return
+
+    await interaction.response.defer(ephemeral=True)
+    settled_count, total_paid = await asyncio.to_thread(auto_settle_scored_matches_for_guild, interaction.guild.id)
+    await refresh_betting_panel(interaction.guild, force=True)
+    await refresh_live_results_panel(interaction.guild, force=True)
+    await refresh_betting_side_panels(interaction.guild, force=True)
+    await interaction.followup.send(
+        f"✅ Auto rozliczenie zakończone. Rozliczono meczów: **{settled_count}**, wypłacono łącznie: **{total_paid} pkt**.",
+        ephemeral=True
+    )
 
 
 @bot.tree.command(name="sync_mecze_auto", description="Ręcznie pobiera mecze z API i odświeża panele obstawiania")
