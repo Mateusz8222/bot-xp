@@ -2615,6 +2615,48 @@ class ChatModerationPanelView(discord.ui.View):
         await interaction.response.edit_message(embed=embed, view=ChatModerationPanelView())
 
 
+
+# =========================================================
+# BOT
+# =========================================================
+class XPBot(commands.Bot):
+    def __init__(self):
+        intents = discord.Intents.default()
+        intents.guilds = True
+        intents.members = True
+        intents.messages = True
+        intents.message_content = True
+        intents.voice_states = True
+        super().__init__(command_prefix="!", intents=intents)
+        self.vc_active_since = {}
+        self.panel_refresh_cache = {}
+        self.betting_system_channels = {}
+
+    async def setup_hook(self) -> None:
+        try:
+            self.add_view(ShopView(self))
+        except Exception:
+            pass
+        try:
+            self.add_view(PointsView(self))
+        except Exception:
+            pass
+        try:
+            self.add_view(RankingView(self))
+        except Exception:
+            pass
+        try:
+            self.add_view(XpInfoView(self))
+        except Exception:
+            pass
+        try:
+            self.add_view(ChatModerationPanelView())
+        except Exception:
+            pass
+
+
+bot = XPBot()
+
 # =========================================================
 # EVENTY
 # =========================================================
