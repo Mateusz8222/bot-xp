@@ -2657,6 +2657,21 @@ class XPBot(commands.Bot):
 
 bot = XPBot()
 
+
+def is_active_for_vc(member: discord.Member) -> bool:
+    if member.bot:
+        return False
+    if member.voice is None or member.voice.channel is None:
+        return False
+    if getattr(member.voice, "afk", False):
+        return False
+    if getattr(member.voice, "self_deaf", False):
+        return False
+    if getattr(member.voice, "deaf", False):
+        return False
+    return True
+
+
 # =========================================================
 # EVENTY
 # =========================================================
