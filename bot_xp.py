@@ -1342,13 +1342,24 @@ def update_auto_betting_match(
     competition_name: str,
     local_status: str,
     live_status: str,
-    home_score: int,
-    away_score: int,
+    home_score,
+    away_score,
 ) -> None:
     odds_home, odds_draw, odds_away = derive_realistic_odds(home_team, away_team, competition_code)
 
     conn = db_connect()
     cur = conn.cursor()
+
+    cur.execute(sql("""
+        SELECT home_score, away_score
+        FROM betting_matches
+        WHERE guild_id = ? AND match_id = ?
+    """), (guild_id, match_id))
+    current = fetchone_dict(cur) or {"home_score": 0, "away_score": 0}
+
+    final_home = int(home_score) if home_score is not None else int(current.get("home_score") or 0)
+    final_away = int(away_score) if away_score is not None else int(current.get("away_score") or 0)
+
     cur.execute(sql("""
         UPDATE betting_matches
         SET home_team = ?,
@@ -1367,7 +1378,7 @@ def update_auto_betting_match(
     """), (
         home_team, away_team, int(start_ts),
         odds_home, odds_draw, odds_away,
-        competition_code, competition_name, int(home_score), int(away_score), live_status, local_status,
+        competition_code, competition_name, final_home, final_away, live_status, local_status,
         guild_id, match_id
     ))
     conn.commit()
