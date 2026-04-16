@@ -2613,15 +2613,17 @@ class BettingMatchSelect(discord.ui.Select):
             await safe_interaction_send(interaction, content="❌ Aktualnie brak otwartych meczów.", ephemeral=True)
             return
 
+        await interaction.response.defer(ephemeral=True)
+
         match_id = int(self.values[0])
         match_row = get_betting_match(interaction.guild.id, match_id)
         if not match_row:
-            await safe_interaction_send(interaction, content="❌ Nie znaleziono meczu.", ephemeral=True)
+            await interaction.followup.send("❌ Nie znaleziono meczu.", ephemeral=True)
             return
 
         embed = betting_match_embed(match_row)
         embed.add_field(name="Jak obstawić", value="Kliknij 1, X, 2 albo **Dokładny wynik** i podaj stawkę w punktach.", inline=False)
-        await safe_interaction_send(interaction, embed=embed, view=BettingPickView(match_id), ephemeral=True)
+        await interaction.followup.send(embed=embed, view=BettingPickView(match_id), ephemeral=True)
 
 
 class BettingPanelView(discord.ui.View):
@@ -2634,31 +2636,37 @@ class BettingPanelView(discord.ui.View):
         if interaction.guild is None:
             await safe_interaction_send(interaction, content="Ta akcja działa tylko na serwerze.", ephemeral=True)
             return
-        await refresh_betting_panel(interaction.guild)
-        await refresh_live_results_panel(interaction.guild)
-        await safe_interaction_send(interaction, content="✅ Panele obstawiania zostały odświeżone.", ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
+        await refresh_betting_panel(interaction.guild, force=True)
+        await refresh_live_results_panel(interaction.guild, force=True)
+        await refresh_betting_side_panels(interaction.guild, force=True)
+        await interaction.followup.send("✅ Panele obstawiania zostały odświeżone.", ephemeral=True)
 
     @discord.ui.button(label="🎯 Moje typy", style=discord.ButtonStyle.secondary, row=1, custom_id="betting_my_bets")
     async def my_bets_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.guild is None:
             await safe_interaction_send(interaction, content="Ta akcja działa tylko na serwerze.", ephemeral=True)
             return
+        await interaction.response.defer(ephemeral=True)
         rows = list_user_bets(interaction.guild.id, interaction.user.id, limit=20)
-        await safe_interaction_send(interaction, embed=my_bets_embed(rows), ephemeral=True)
+        await interaction.followup.send(embed=my_bets_embed(rows), ephemeral=True)
 
     @discord.ui.button(label="🏆 Ranking typerów", style=discord.ButtonStyle.secondary, row=1, custom_id="betting_typer_ranking")
     async def typer_ranking_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.guild is None:
             await safe_interaction_send(interaction, content="Ta akcja działa tylko na serwerze.", ephemeral=True)
             return
-        await safe_interaction_send(interaction, embed=typer_ranking_embed(interaction.guild), ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
+        await interaction.followup.send(embed=typer_ranking_embed(interaction.guild), ephemeral=True)
 
     @discord.ui.button(label="🔴 Live", style=discord.ButtonStyle.danger, row=1, custom_id="betting_live")
     async def live_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.guild is None:
             await safe_interaction_send(interaction, content="Ta akcja działa tylko na serwerze.", ephemeral=True)
             return
-        await safe_interaction_send(interaction, embed=live_results_embed(interaction.guild), ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
+        await refresh_live_results_panel(interaction.guild, force=True)
+        await interaction.followup.send(embed=live_results_embed(interaction.guild), ephemeral=True)
 
 
 async def refresh_betting_panel(guild: discord.Guild, *, force: bool = False) -> None:
