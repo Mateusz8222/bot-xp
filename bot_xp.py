@@ -561,21 +561,6 @@ def init_db() -> None:
             )
         """)
         cur.execute("""
-            CREATE TABLE IF NOT EXISTS betting_scorer_bets (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                guild_id INTEGER NOT NULL,
-                match_id INTEGER NOT NULL,
-                user_id INTEGER NOT NULL,
-                scorer_name TEXT NOT NULL,
-                stake INTEGER NOT NULL,
-                potential_win INTEGER NOT NULL,
-                status TEXT NOT NULL DEFAULT 'open',
-                created_at INTEGER NOT NULL,
-                settled_at INTEGER,
-                UNIQUE(guild_id, match_id, user_id, scorer_name)
-            )
-        """)
-        cur.execute("""
             CREATE TABLE IF NOT EXISTS betting_user_stats (
                 guild_id BIGINT NOT NULL,
                 user_id BIGINT NOT NULL,
@@ -692,6 +677,21 @@ def init_db() -> None:
                 potential_win INTEGER NOT NULL,
                 created_at INTEGER NOT NULL,
                 PRIMARY KEY (guild_id, match_id, user_id)
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS betting_scorer_bets (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                match_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                scorer_name TEXT NOT NULL,
+                stake INTEGER NOT NULL,
+                potential_win INTEGER NOT NULL,
+                status TEXT NOT NULL DEFAULT 'open',
+                created_at INTEGER NOT NULL,
+                settled_at INTEGER,
+                UNIQUE(guild_id, match_id, user_id, scorer_name)
             )
         """)
         cur.execute("""
