@@ -831,6 +831,19 @@ def remove_total_points(guild_id: int, user_id: int, amount: int) -> None:
     conn.commit()
     conn.close()
 
+def add_total_points(guild_id: int, user_id: int, amount: int) -> None:
+    ensure_user_row(guild_id, user_id)
+    conn = db_connect()
+    cur = conn.cursor()
+    cur.execute(sql("""
+        UPDATE points
+        SET total_points = total_points + ?
+        WHERE guild_id = ? AND user_id = ?
+    """), (int(amount), guild_id, user_id))
+    conn.commit()
+    conn.close()
+
+
 def reset_user_points(guild_id: int, user_id: int) -> None:
     conn = db_connect()
     cur = conn.cursor()
@@ -4251,6 +4264,58 @@ async def before_vc_loop():
 # =========================================================
 # KOMENDY SLASH
 # =========================================================
+@bot.tree.command(name="dodaj_punkty_kanalu", description="Ręcznie dodaje punkty kanału wybranemu użytkownikowi")
+@app_commands.checks.has_permissions(manage_guild=True)
+@app_commands.describe(uzytkownik="Użytkownik", ilosc="Liczba punktów do dodania", powod="Powód dodania punktów")
+async def dodaj_punkty_kanalu(
+    interaction: discord.Interaction,
+    uzytkownik: discord.Member,
+    ilosc: app_commands.Range[int, 1, 1000000],
+    powod: str | None = None,
+):
+    if interaction.guild is None:
+        await safe_interaction_send(interaction, content="Ta komenda działa tylko na serwerze.", ephemeral=True)
+        return
+
+    add_total_points(interaction.guild.id, uzytkownik.id, int(ilosc))
+    row = get_points_row(interaction.guild.id, uzytkownik.id)
+    total = int(row["total_points"]) if row else int(ilosc)
+
+    embed = discord.Embed(title="✅ Dodano punkty kanału", color=discord.Color.green())
+    embed.add_field(name="Użytkownik", value=uzytkownik.mention, inline=True)
+    embed.add_field(name="Dodano", value=f"{int(ilosc)} pkt", inline=True)
+    embed.add_field(name="Nowy stan", value=f"{total} pkt", inline=True)
+    embed.add_field(name="Powód", value=powod or "Brak", inline=False)
+    embed.set_footer(text="Auto naliczanie punktów działa dalej normalnie.")
+    await safe_interaction_send(interaction, embed=embed, ephemeral=True)
+
+
+@bot.tree.command(name="zabierz_punkty_kanalu", description="Ręcznie zabiera punkty kanału wybranemu użytkownikowi")
+@app_commands.checks.has_permissions(manage_guild=True)
+@app_commands.describe(uzytkownik="Użytkownik", ilosc="Liczba punktów do odjęcia", powod="Powód zabrania punktów")
+async def zabierz_punkty_kanalu(
+    interaction: discord.Interaction,
+    uzytkownik: discord.Member,
+    ilosc: app_commands.Range[int, 1, 1000000],
+    powod: str | None = None,
+):
+    if interaction.guild is None:
+        await safe_interaction_send(interaction, content="Ta komenda działa tylko na serwerze.", ephemeral=True)
+        return
+
+    remove_total_points(interaction.guild.id, uzytkownik.id, int(ilosc))
+    row = get_points_row(interaction.guild.id, uzytkownik.id)
+    total = int(row["total_points"]) if row else 0
+
+    embed = discord.Embed(title="🗑️ Zabrano punkty kanału", color=discord.Color.orange())
+    embed.add_field(name="Użytkownik", value=uzytkownik.mention, inline=True)
+    embed.add_field(name="Zabrano", value=f"{int(ilosc)} pkt", inline=True)
+    embed.add_field(name="Nowy stan", value=f"{total} pkt", inline=True)
+    embed.add_field(name="Powód", value=powod or "Brak", inline=False)
+    embed.set_footer(text="Auto naliczanie punktów działa dalej normalnie.")
+    await safe_interaction_send(interaction, embed=embed, ephemeral=True)
+
+
 @bot.tree.command(name="punkty", description="Pokazuje Twoje punkty")
 async def punkty(interaction: discord.Interaction):
     if interaction.guild is None:
