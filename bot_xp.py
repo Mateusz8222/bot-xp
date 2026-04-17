@@ -2137,6 +2137,62 @@ def betting_panel_embed(guild: discord.Guild) -> discord.Embed:
     return embed
 
 
+def typer_ranking_embed(guild: discord.Guild) -> discord.Embed:
+    rows = get_top_typers(guild.id, 10)
+    embed = discord.Embed(
+        title="🏆 Ranking typerów",
+        description="Najlepsi typerzy według wygranych punktów, skuteczności i serii.",
+        color=discord.Color.gold()
+    )
+
+    if not rows:
+        embed.description = "Brak statystyk typerów."
+        return embed
+
+    chunks = []
+    current = ""
+    pos = 1
+
+    for row in rows:
+        member = guild.get_member(int(row["user_id"]))
+        if member is None or member.bot:
+            continue
+
+        total_bets = int(row.get("total_bets") or 0)
+        wins = int(row.get("wins") or 0)
+        total_staked = int(row.get("total_staked") or 0)
+        total_won = int(row.get("total_won") or 0)
+        hit_rate = (wins / total_bets * 100.0) if total_bets > 0 else 0.0
+        roi = (((total_won - total_staked) / total_staked) * 100.0) if total_staked > 0 else 0.0
+
+        line = (
+            f"**{pos}. {member.display_name}**\n"
+            f"Zakłady: **{total_bets}** | Winrate: **{hit_rate:.1f}%** | ROI: **{roi:.1f}%**\n"
+            f"Wygrane pkt: **{total_won}** | Seria: **{int(row.get('best_streak') or 0)}**"
+        )
+
+        block = line if not current else "\n\n" + line
+        if len(current) + len(block) > 1000:
+            if current:
+                chunks.append(current)
+            current = line
+        else:
+            current += block
+        pos += 1
+
+    if current:
+        chunks.append(current)
+
+    if not chunks:
+        embed.description = "Brak statystyk typerów."
+        return embed
+
+    for idx, chunk in enumerate(chunks, start=1):
+        embed.add_field(name="Ranking" if idx == 1 else f"Ranking {idx}", value=chunk, inline=False)
+
+    return embed
+
+
 def betting_match_embed(match_row: dict) -> discord.Embed:
     status_map = {
         "open": "🟢 Otwarte",
