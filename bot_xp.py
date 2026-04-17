@@ -2188,6 +2188,666 @@ def my_bets_embed(rows: list[dict]) -> discord.Embed:
     embed.set_footer(text="Aktywne typy są na górze. Rozliczone trafiają do krótkiej historii.")
     return embed
 
+
+class BetStakeModal(discord.ui.Modal, title="🎯 Postaw zakład"):
+    stake = discord.ui.TextInput(label="Stawka w punktach", placeholder="Np. 100", required=True, max_length=10)
+
+    def __init__(self, match_id: int, pick: str):
+        super().__init__()
+        self.match_id = int(match_id)
+        self.pick = pick
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if interaction.guild is None:
+            await safe_interaction_send(interaction, content="Ta akcja działa tylko na serwerze.", ephemeral=True)
+            return
+
+        try:
+            stake_value = int(str(self.stake).strip())
+        except ValueError:
+            await safe_interaction_send(interaction, content="❌ Stawka musi być liczbą całkowitą.", ephemeral=True)
+            return
+
+        if stake_value < BETTING_MIN_STAKE:
+            await safe_interaction_send(interaction, content=f"❌ Minimalna stawka to {BETTING_MIN_STAKE} pkt.", ephemeral=True)
+            return
+
+        match_row = get_betting_match(interaction.guild.id, self.match_id)
+        if not match_row:
+            await safe_interaction_send(interaction, content="❌ Nie znaleziono meczu.", ephemeral=True)
+            return
+
+        if match_row["status"] != "open":
+            await safe_interaction_send(interaction, content="❌ Ten mecz nie jest już otwarty do obstawiania.", ephemeral=True)
+            return
+
+        if int(match_row["start_ts"]) <= int(time.time()):
+            await safe_interaction_send(interaction, content="❌ Czas obstawiania minął.", ephemeral=True)
+            return
+
+        existing_bet = get_user_bet(interaction.guild.id, self.match_id, interaction.user.id)
+        if existing_bet:
+            await safe_interaction_send(interaction, content="❌ Już obstawiłeś ten mecz.", ephemeral=True)
+            return
+
+        points_row = get_points_row(interaction.guild.id, interaction.user.id)
+        total_points = int(points_row["total_points"]) if points_row else 0
+        if total_points < stake_value:
+            await safe_interaction_send(interaction, content="❌ Nie masz tyle punktów.", ephemeral=True)
+            return
+
+        odds = get_bet_odds_for_pick(match_row, self.pick)
+        potential_win = int(round(stake_value * odds))
+
+        inserted = place_bet(interaction.guild.id, self.match_id, interaction.user.id, self.pick, stake_value, potential_win)
+        if not inserted:
+            await safe_interaction_send(interaction, content="❌ Nie udało się zapisać zakładu.", ephemeral=True)
+            return
+
+        remove_total_points(interaction.guild.id, interaction.user.id, stake_value)
+        embed = discord.Embed(title="✅ Zakład przyjęty", color=discord.Color.green())
+        embed.add_field(name="Mecz", value=f"#{self.match_id} | {match_row['home_team']} vs {match_row['away_team']}", inline=False)
+        embed.add_field(name="Typ", value=self.pick, inline=True)
+        embed.add_field(name="Stawka", value=f"{stake_value} pkt", inline=True)
+        embed.add_field(name="Możliwa wygrana", value=f"{potential_win} pkt", inline=True)
+        await safe_interaction_send(interaction, embed=embed, ephemeral=True)
+
+
+
+class ExactScoreBetModal(discord.ui.Modal, title="🎯 Dokładny wynik"):
+    home_goals = discord.ui.TextInput(label="Gole gospodarzy", placeholder="Np. 2", required=True, max_length=2)
+    away_goals = discord.ui.TextInput(label="Gole gości", placeholder="Np. 1", required=True, max_length=2)
+    stake = discord.ui.TextInput(label="Stawka w punktach", placeholder="Np. 100", required=True, max_length=10)
+
+    def __init__(self, match_id: int):
+        super().__init__()
+        self.match_id = int(match_id)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if interaction.guild is None:
+            await safe_interaction_send(interaction, content="Ta akcja działa tylko na serwerze.", ephemeral=True)
+            return
+
+        try:
+            home_g = int(str(self.home_goals).strip())
+            away_g = int(str(self.away_goals).strip())
+            stake_value = int(str(self.stake).strip())
+        except ValueError:
+            await safe_interaction_send(interaction, content="❌ Musisz wpisać liczby całkowite.", ephemeral=True)
+            return
+
+        if home_g < 0 or away_g < 0:
+            await safe_interaction_send(interaction, content="❌ Liczba goli nie może być ujemna.", ephemeral=True)
+            return
+
+        if stake_value < BETTING_MIN_STAKE:
+            await safe_interaction_send(interaction, content=f"❌ Minimalna stawka to {BETTING_MIN_STAKE} pkt.", ephemeral=True)
+            return
+
+        match_row = get_betting_match(interaction.guild.id, self.match_id)
+        if not match_row:
+            await safe_interaction_send(interaction, content="❌ Nie znaleziono meczu.", ephemeral=True)
+            return
+
+        if match_row["status"] != "open":
+            await safe_interaction_send(interaction, content="❌ Ten mecz nie jest już otwarty do obstawiania.", ephemeral=True)
+            return
+
+        if int(match_row["start_ts"]) <= int(time.time()):
+            await safe_interaction_send(interaction, content="❌ Czas obstawiania minął.", ephemeral=True)
+            return
+
+        existing_bet = get_user_bet(interaction.guild.id, self.match_id, interaction.user.id)
+        if existing_bet:
+            await safe_interaction_send(interaction, content="❌ Już obstawiłeś ten mecz.", ephemeral=True)
+            return
+
+        points_row = get_points_row(interaction.guild.id, interaction.user.id)
+        total_points = int(points_row["total_points"]) if points_row else 0
+        if total_points < stake_value:
+            await safe_interaction_send(interaction, content="❌ Nie masz tyle punktów.", ephemeral=True)
+            return
+
+        pick = f"SCORE:{home_g}-{away_g}"
+        odds = get_bet_odds_for_pick(match_row, pick)
+        potential_win = int(round(stake_value * odds))
+
+        inserted = place_bet(interaction.guild.id, self.match_id, interaction.user.id, pick, stake_value, potential_win)
+        if not inserted:
+            await safe_interaction_send(interaction, content="❌ Nie udało się zapisać zakładu.", ephemeral=True)
+            return
+
+        remove_total_points(interaction.guild.id, interaction.user.id, stake_value)
+
+        embed = discord.Embed(title="✅ Zakład na dokładny wynik przyjęty", color=discord.Color.green())
+        embed.add_field(name="Mecz", value=f"#{self.match_id} | {match_row['home_team']} vs {match_row['away_team']}", inline=False)
+        embed.add_field(name="Typ", value=f"{home_g}:{away_g}", inline=True)
+        embed.add_field(name="Kurs", value=f"{odds:.2f}", inline=True)
+        embed.add_field(name="Stawka", value=f"{stake_value} pkt", inline=True)
+        embed.add_field(name="Możliwa wygrana", value=f"{potential_win} pkt", inline=False)
+        await safe_interaction_send(interaction, embed=embed, ephemeral=True)
+
+
+class BettingPickView(discord.ui.View):
+    def __init__(self, match_id: int):
+        super().__init__(timeout=180)
+        self.match_id = int(match_id)
+
+    @discord.ui.button(label="1", style=discord.ButtonStyle.success, row=0)
+    async def pick_home(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(BetStakeModal(self.match_id, "1"))
+
+    @discord.ui.button(label="X", style=discord.ButtonStyle.secondary, row=0)
+    async def pick_draw(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(BetStakeModal(self.match_id, "X"))
+
+    @discord.ui.button(label="2", style=discord.ButtonStyle.danger, row=0)
+    async def pick_away(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(BetStakeModal(self.match_id, "2"))
+
+    @discord.ui.button(label="🎯 Dokładny wynik", style=discord.ButtonStyle.primary, row=1)
+    async def exact_score(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(ExactScoreBetModal(self.match_id))
+
+
+class BettingMatchSelect(discord.ui.Select):
+    def __init__(self, guild_id: int):
+        rows = list_betting_matches(guild_id, status="open", limit=25)
+        options = []
+
+        if rows:
+            for row in rows[:25]:
+                label = f"#{row['match_id']} {row['home_team']} vs {row['away_team']}"
+                description = f"{(row.get('competition_code') or 'LIGA')} | 1:{float(row['odds_home']):.2f} X:{float(row['odds_draw']):.2f} 2:{float(row['odds_away']):.2f}"
+                options.append(discord.SelectOption(label=label[:100], description=description[:100], value=str(row['match_id'])))
+
+        if not options:
+            options.append(discord.SelectOption(label="Brak otwartych meczów", value="none"))
+
+        super().__init__(
+            placeholder="Wybierz mecz do obstawienia",
+            min_values=1,
+            max_values=1,
+            options=options,
+            custom_id=f"betting_match_select_{guild_id}",
+            disabled=(len(rows) == 0),
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        if self.values[0] == "none":
+            await safe_interaction_send(interaction, content="❌ Aktualnie brak otwartych meczów.", ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=True)
+
+        match_id = int(self.values[0])
+        match_row = get_betting_match(interaction.guild.id, match_id)
+        if not match_row:
+            await interaction.followup.send("❌ Nie znaleziono meczu.", ephemeral=True)
+            return
+
+        embed = betting_match_embed(match_row)
+        embed.add_field(name="Jak obstawić", value="Kliknij 1, X, 2 albo **Dokładny wynik** i podaj stawkę w punktach.", inline=False)
+        await interaction.followup.send(embed=embed, view=BettingPickView(match_id), ephemeral=True)
+
+
+class BettingPanelView(discord.ui.View):
+    def __init__(self, guild_id: int):
+        super().__init__(timeout=None)
+        self.add_item(BettingMatchSelect(guild_id))
+
+    @discord.ui.button(label="🔄 Odśwież", style=discord.ButtonStyle.primary, row=1, custom_id="betting_refresh")
+    async def refresh_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.guild is None:
+            await safe_interaction_send(interaction, content="Ta akcja działa tylko na serwerze.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+        await refresh_betting_panel(interaction.guild, force=True)
+        await refresh_live_results_panel(interaction.guild, force=True)
+        await refresh_betting_side_panels(interaction.guild, force=True)
+        await interaction.followup.send("✅ Panele obstawiania zostały odświeżone.", ephemeral=True)
+
+    @discord.ui.button(label="🎯 Moje typy", style=discord.ButtonStyle.secondary, row=1, custom_id="betting_my_bets")
+    async def my_bets_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.guild is None:
+            await safe_interaction_send(interaction, content="Ta akcja działa tylko na serwerze.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+        rows = list_user_bets(interaction.guild.id, interaction.user.id, limit=20)
+        await interaction.followup.send(embed=my_bets_embed(rows), ephemeral=True)
+
+    @discord.ui.button(label="🏆 Ranking typerów", style=discord.ButtonStyle.secondary, row=1, custom_id="betting_typer_ranking")
+    async def typer_ranking_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.guild is None:
+            await safe_interaction_send(interaction, content="Ta akcja działa tylko na serwerze.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+        await interaction.followup.send(embed=typer_ranking_embed(interaction.guild), ephemeral=True)
+
+    @discord.ui.button(label="🔴 Live", style=discord.ButtonStyle.danger, row=1, custom_id="betting_live")
+    async def live_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.guild is None:
+            await safe_interaction_send(interaction, content="Ta akcja działa tylko na serwerze.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+        await refresh_live_results_panel(interaction.guild, force=True)
+        await interaction.followup.send(embed=live_results_embed(interaction.guild), ephemeral=True)
+
+
+async def refresh_betting_panel(guild: discord.Guild, *, force: bool = False) -> None:
+    now_ts = time.time()
+    cache_key = (guild.id, "betting")
+    last_ts = bot.panel_refresh_cache.get(cache_key, 0.0)
+
+    if not force and now_ts - last_ts < BETTING_PANEL_REFRESH_SECONDS:
+        return
+
+    await ensure_panel_message(guild, "betting", betting_panel_embed(guild), BettingPanelView(guild.id))
+    bot.panel_refresh_cache[cache_key] = now_ts
+
+
+async def refresh_live_results_panel(guild: discord.Guild, *, force: bool = False) -> None:
+    now_ts = time.time()
+    cache_key = (guild.id, "betting_live")
+    last_ts = bot.panel_refresh_cache.get(cache_key, 0.0)
+
+    if not force and now_ts - last_ts < BETTING_LIVE_REFRESH_SECONDS:
+        return
+
+    await ensure_panel_message(guild, "betting_live", live_results_embed(guild), None)
+    bot.panel_refresh_cache[cache_key] = now_ts
+
+
+
+async def refresh_betting_side_panels(guild: discord.Guild, *, force: bool = False) -> None:
+    await ensure_panel_message(guild, "betting_bets", betting_bets_panel_embed(guild), None)
+    await ensure_panel_message(guild, "betting_ranking", betting_ranking_panel_embed(guild), None)
+    await ensure_panel_message(guild, "betting_stats", betting_stats_panel_embed(guild), None)
+
+
+# =========================================================
+# BOT
+# =========================================================
+class XPBot(commands.Bot):
+    def __init__(self):
+        intents = discord.Intents.default()
+        intents.guilds = True
+        intents.members = True
+        intents.messages = True
+        intents.message_content = True
+        intents.voice_states = True
+        super().__init__(command_prefix="!", intents=intents)
+        self.vc_active_since: dict[tuple[int, int], float] = {}
+        self.panel_refresh_cache: dict[tuple[int, str], float] = {}
+        self.betting_system_channels: dict[int, dict[str, int]] = {}
+
+    async def setup_hook(self) -> None:
+        self.add_view(ShopView(self))
+        self.add_view(PointsView(self))
+        self.add_view(RankingView(self))
+        self.add_view(XpInfoView(self))
+        self.add_view(ChatModerationPanelView())
+        # widok obstawiania dla aktywnego serwera odświeża się przez panel
+
+bot = XPBot()
+
+# =========================================================
+# POMOCNICZE
+# =========================================================
+async def safe_interaction_send(
+    interaction: discord.Interaction,
+    *,
+    content: str | None = None,
+    embed: discord.Embed | None = None,
+    view: discord.ui.View | None = None,
+    ephemeral: bool = False,
+) -> None:
+    kwargs = {"ephemeral": ephemeral}
+
+    if content is not None:
+        kwargs["content"] = content
+    if embed is not None:
+        kwargs["embed"] = embed
+    if view is not None:
+        kwargs["view"] = view
+
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send(**kwargs)
+        else:
+            await interaction.response.send_message(**kwargs)
+    except discord.InteractionResponded:
+        await interaction.followup.send(**kwargs)
+
+def get_member_multiplier(member: discord.Member) -> float:
+    role_ids = {role.id for role in member.roles}
+    if LEGEND_ROLE_ID in role_ids:
+        return LEGEND_MULTIPLIER
+    if VIP_ROLE_ID in role_ids:
+        return VIP_MULTIPLIER
+    return 1.0
+
+def add_points_with_role_bonus(member: discord.Member, *, text_points: int = 0, voice_points: int = 0) -> None:
+    multiplier = get_total_multiplier(member)
+    final_text = int(text_points * multiplier)
+    final_voice = int(voice_points * multiplier)
+    add_points_db(member.guild.id, member.id, text_points=final_text, voice_points=final_voice)
+
+def is_active_for_vc(member: discord.Member) -> bool:
+    if member.bot:
+        return False
+    if member.voice is None or member.voice.channel is None:
+        return False
+
+    v = member.voice
+    if v.self_mute or v.mute:
+        return False
+    if v.self_deaf or v.deaf:
+        return False
+    if member.guild.afk_channel and v.channel.id == member.guild.afk_channel.id:
+        return False
+    return True
+
+def count_active_members_in_channel(channel: discord.VoiceChannel) -> int:
+    return sum(1 for member in channel.members if is_active_for_vc(member))
+
+def get_rank_prefix(member: Optional[discord.Member]) -> str:
+    if member is None:
+        return ""
+    role_ids = {role.id for role in member.roles}
+    if LEGEND_ROLE_ID in role_ids:
+        return "💎 "
+    if VIP_ROLE_ID in role_ids:
+        return "⭐ "
+    if SIGMA_ROLE_ID in role_ids:
+        return "😎 "
+    return ""
+
+def get_reward_role_name(role_id: int) -> str:
+    mapping = {
+        BRONZE_MEDAL_ROLE_ID: "🥉 Brązowy Medal",
+        SILVER_MEDAL_ROLE_ID: "🥈 Srebrny Medal",
+        GOLD_MEDAL_ROLE_ID: "🥇 Złoty Medal",
+        SIGMA_ROLE_ID: "😎 SIGMA",
+        VIP_ROLE_ID: "⭐ VIP",
+        LEGEND_ROLE_ID: "💎 LEGENDA",
+    }
+    return mapping.get(role_id, f"Rola {role_id}")
+
+def is_real_user(obj) -> bool:
+    return not getattr(obj, "bot", False)
+
+def sanitize_private_channel_name(name: str) -> str:
+    safe = name.lower().strip()
+    replacements = {
+        "ą": "a", "ć": "c", "ę": "e", "ł": "l", "ń": "n",
+        "ó": "o", "ś": "s", "ż": "z", "ź": "z",
+    }
+    for old, new in replacements.items():
+        safe = safe.replace(old, new)
+
+    allowed = []
+    for ch in safe:
+        if ch.isalnum() or ch in {"-", "_"}:
+            allowed.append(ch)
+        elif ch in {" ", "."}:
+            allowed.append("-")
+
+    safe = "".join(allowed)
+    while "--" in safe:
+        safe = safe.replace("--", "-")
+    safe = safe.strip("-_")
+    if not safe:
+        safe = "uzytkownik"
+    return f"{PRIVATE_CHANNEL_PREFIX}{safe[:80]}"
+
+async def create_or_get_private_channel_for_member(guild: discord.Guild, member: discord.Member) -> discord.VoiceChannel:
+    category = discord.utils.get(guild.categories, name=PRIVATE_CHANNEL_CATEGORY_NAME)
+    if category is None:
+        category = await guild.create_category(PRIVATE_CHANNEL_CATEGORY_NAME, reason="Auto prywatne kanały")
+
+    expected_name = sanitize_private_channel_name(member.display_name)
+
+    for channel in category.voice_channels:
+        overwrites = channel.overwrites_for(member)
+        if channel.name == expected_name or overwrites.view_channel is True:
+            return channel
+
+    bot_member = guild.me
+    overwrites = {
+        guild.default_role: discord.PermissionOverwrite(view_channel=False, connect=False),
+        member: discord.PermissionOverwrite(
+            view_channel=True,
+            connect=True,
+            speak=True,
+            stream=True,
+            use_voice_activation=True,
+        ),
+    }
+    if bot_member is not None:
+        overwrites[bot_member] = discord.PermissionOverwrite(
+            view_channel=True,
+            connect=True,
+            speak=True,
+            manage_channels=True,
+            move_members=True,
+        )
+
+    role = guild.get_role(PRIVATE_CHANNEL_ROLE_ID)
+    if role is not None:
+        overwrites[role] = discord.PermissionOverwrite(
+            view_channel=True,
+            connect=True,
+            speak=True,
+        )
+
+    channel = await guild.create_voice_channel(
+        name=expected_name,
+        category=category,
+        overwrites=overwrites,
+        reason=f"Auto prywatny kanał dla {member}",
+    )
+    return channel
+
+def points_embed_for_user(member: discord.Member, row: dict) -> discord.Embed:
+    embed = discord.Embed(title="🏆 Twoje punkty", color=discord.Color.blurple())
+    embed.add_field(name="💬 Za wiadomości", value=str(row["text_points"]), inline=False)
+    embed.add_field(name="🎤 Za VC", value=str(row["voice_points"]), inline=False)
+    embed.add_field(name="⭐ Razem", value=str(row["total_points"]), inline=False)
+    embed.add_field(name="📝 Liczba wiadomości", value=str(row["message_count"]), inline=False)
+    embed.set_footer(text=f"Użytkownik: {member.display_name}")
+    return embed
+
+def ranking_embed(guild: discord.Guild) -> discord.Embed:
+    rows = get_top_users(guild.id, 50)
+    embed = discord.Embed(title="🏆 Ranking serwera", color=discord.Color.gold())
+
+    lines = []
+    position = 1
+
+    for row in rows:
+        member = guild.get_member(int(row["user_id"]))
+        if member is None or member.bot:
+            continue
+
+        prefix = get_rank_prefix(member)
+        lines.append(
+            f"**{position}.** {prefix}{member.display_name} — **{row['total_points']} pkt** "
+            f"(💬 {row['text_points']} | 🎤 {row['voice_points']} | 📝 {row['message_count']})"
+        )
+        position += 1
+
+        if position > 10:
+            break
+
+    if not lines:
+        embed.description = "Na tym serwerze nikt nie ma jeszcze punktów."
+        return embed
+
+    embed.description = "\n".join(lines)
+    return embed
+
+def xpinfo_embed() -> discord.Embed:
+    embed = discord.Embed(title="📘 Zasady punktów", color=discord.Color.orange())
+    embed.add_field(name="💬 Wiadomości", value="2 punkty za każde 10 wiadomości", inline=False)
+    embed.add_field(
+        name="🎤 VC",
+        value="1 punkt za 30 sekund solo\n2+ osoby: punkty co 30 sekund = liczba aktywnych osób na kanale",
+        inline=False,
+    )
+    embed.add_field(name="⭐ Bonusy rang", value="VIP: +20%\nLEGENDA: +40%", inline=False)
+    embed.add_field(name="📦 Skrzynki", value="Mogą wypaść punkty, role, medale albo pusta skrzynka.", inline=False)
+    embed.add_field(name="⚡ Booster XP", value="+25% XP przez 1 godzinę po zakupie.", inline=False)
+    embed.add_field(name="🌌 AURA", value="Prestiżowa rola wizualna do kupienia w sklepie.", inline=False)
+    embed.add_field(name="🛡️ System kar", value=f"AutoMod daje warny. 1 = ostrzeżenie, 10 = kick, 20 = ban. Co {AUTOMOD_WARN_DECAY_HOURS}h bez przewinień schodzi 1 warn.", inline=False)
+    embed.add_field(name="🔗 Linki", value="Discord invite = natychmiastowy ban. TikTok / YouTube / Kick / skrócone linki = usunięcie + warn.", inline=False)
+    embed.add_field(name="⚙️ Panel moderacji", value="Użyj `/panel_moderacji`, `/moderacja_on`, `/moderacja_off`, `/status_moderacji`.", inline=False)
+    embed.add_field(name="🎯 Obstawianie", value="Bot sam tworzy kategorię i kanały obstawiania. Użyj `/panel_obstawiania`. Dostępny też **dokładny wynik**.", inline=False)
+    embed.add_field(name="⚽ Auto mecze", value="Bot może pobierać mecze z football-data.org i sam aktualizować panel. Użyj `/sync_mecze_auto`.", inline=False)
+    embed.add_field(name="🏆 Typerzy i LIVE", value="Masz `/ranking_typerow`, `/moje_staty_typerskie`, `/profil_typera` i panel LIVE wyników.", inline=False)
+    embed.add_field(name="❌ Punkty VC nie lecą gdy", value="bot / mute / deaf / kanał AFK", inline=False)
+    return embed
+
+def shop_embed() -> discord.Embed:
+    embed = discord.Embed(
+        title="🛒 Sklep punktów",
+        description="Kupuj role, funkcje i skrzynki za punkty aktywności.",
+        color=discord.Color.gold(),
+    )
+
+    sorted_items = sorted(SHOP_ITEMS.values(), key=lambda item: item["price"])
+
+    for item in sorted_items:
+        embed.add_field(
+            name=item["label"],
+            value=f"Cena: **{item['price']:,} pkt**".replace(",", " "),
+            inline=False,
+        )
+
+    embed.set_footer(text="Możesz kupować przyciskami albo komendą /kup")
+    return embed
+
+def points_panel_embed() -> discord.Embed:
+    return discord.Embed(
+        title="📊 Punkty",
+        description="Kliknij przycisk poniżej albo użyj `/punkty` w tym kanale.",
+        color=discord.Color.blue(),
+    )
+
+def ranking_panel_embed() -> discord.Embed:
+    return discord.Embed(
+        title="🏆 Ranking",
+        description="Kliknij przycisk poniżej albo użyj `/ranking` w tym kanale.",
+        color=discord.Color.gold(),
+    )
+
+def xpinfo_panel_embed() -> discord.Embed:
+    return discord.Embed(
+        title="📘 Info XP",
+        description="Kliknij przycisk poniżej albo użyj `/xpinfo` w tym kanale.",
+        color=discord.Color.orange(),
+    )
+
+def crate_result_embed(crate_key: str, reward_type: str, reward_value: Optional[str], member: discord.Member) -> discord.Embed:
+    crate = CRATE_CONFIG[crate_key]
+    color = discord.Color.random()
+
+    if reward_type == "points":
+        title = f"{crate['emoji']} Otworzyłeś {crate['label']}"
+        desc = f"🎉 **{member.display_name}** wygrał **{reward_value} pkt**!"
+        color = discord.Color.green()
+    elif reward_type == "role":
+        title = f"{crate['emoji']} Otworzyłeś {crate['label']}"
+        desc = f"🏅 **{member.display_name}** zdobył **{reward_value}**!"
+        color = discord.Color.gold()
+    else:
+        title = f"{crate['emoji']} Otworzyłeś {crate['label']}"
+        desc = f"❌ **{member.display_name}** trafił pustą skrzynkę."
+        color = discord.Color.red()
+
+    embed = discord.Embed(title=title, description=desc, color=color)
+    embed.set_footer(text="Powodzenia przy następnym otwarciu 😎")
+    return embed
+
+def crate_history_embed(member: discord.Member, history: list[dict]) -> discord.Embed:
+    embed = discord.Embed(
+        title="📜 Ostatnie skrzynki",
+        description=f"Ostatnie otwarcia skrzynek użytkownika **{member.display_name}**",
+        color=discord.Color.blurple(),
+    )
+
+    if not history:
+        embed.description = "Brak historii skrzynek."
+        return embed
+
+    lines = []
+    for item in history:
+        crate_label = CRATE_CONFIG.get(item["crate_key"], {}).get("label", item["crate_key"])
+        reward_type = item["reward_type"]
+        reward_value = item["reward_value"] or "nic"
+        ts = int(item["created_at"])
+        if reward_type == "points":
+            reward_text = f"{reward_value} pkt"
+        elif reward_type == "role":
+            reward_text = reward_value
+        else:
+            reward_text = "❌ pusta skrzynka"
+
+        lines.append(f"• **{crate_label}** → {reward_text} <t:{ts}:R>")
+
+    embed.description = "\n".join(lines)
+    return embed
+
+
+def get_runtime_panel_channel_id(guild_id: int, panel_key: str) -> int | None:
+    if panel_key in {"betting", "betting_live", "betting_bets", "betting_ranking", "betting_stats"}:
+        channel_map = bot.betting_system_channels.get(guild_id, {})
+        return channel_map.get(panel_key)
+    return PANEL_CHANNELS.get(panel_key)
+
+
+def get_betting_panel_channel_id(guild_id: int) -> int | None:
+    channel_map = bot.betting_system_channels.get(guild_id, {})
+    return channel_map.get("betting")
+
+
+def get_betting_live_channel_id(guild_id: int) -> int | None:
+    channel_map = bot.betting_system_channels.get(guild_id, {})
+    return channel_map.get("betting_live")
+
+
+def get_betting_bets_channel_id(guild_id: int) -> int | None:
+    channel_map = bot.betting_system_channels.get(guild_id, {})
+    return channel_map.get("betting_bets")
+
+
+async def ensure_betting_system_channels(guild: discord.Guild) -> dict[str, int]:
+    category = discord.utils.get(guild.categories, name=BETTING_CATEGORY_NAME)
+    if category is None:
+        category = await guild.create_category(BETTING_CATEGORY_NAME)
+
+    created: dict[str, int] = {}
+
+    for key, channel_name in BETTING_AUTO_CHANNELS.items():
+        channel = discord.utils.get(guild.text_channels, name=channel_name)
+        if channel is None:
+            channel = await guild.create_text_channel(
+                name=channel_name,
+                category=category,
+                reason="Automatyczne tworzenie kanałów obstawiania",
+            )
+        elif channel.category != category:
+            try:
+                await channel.edit(category=category, reason="Naprawa kategorii systemu obstawiania")
+            except discord.HTTPException:
+                pass
+
+        created[key] = channel.id
+
+    bot.betting_system_channels[guild.id] = created
+    return created
+
+
 def choose_crate_reward(crate_key: str) -> dict:
     rewards = CRATE_CONFIG[crate_key]["rewards"]
     weights = [reward["weight"] for reward in rewards]
@@ -2466,7 +3126,7 @@ async def process_shop_purchase(interaction: discord.Interaction, item_name: str
 # GUI
 # =========================================================
 class PointsView(discord.ui.View):
-    def __init__(self, bot_instance):
+    def __init__(self, bot_instance: XPBot):
         super().__init__(timeout=None)
         self.bot = bot_instance
 
@@ -2485,7 +3145,7 @@ class PointsView(discord.ui.View):
         await safe_interaction_send(interaction, embed=points_embed_for_user(member, row), ephemeral=True)
 
 class RankingView(discord.ui.View):
-    def __init__(self, bot_instance):
+    def __init__(self, bot_instance: XPBot):
         super().__init__(timeout=None)
         self.bot = bot_instance
 
@@ -2498,7 +3158,7 @@ class RankingView(discord.ui.View):
         await safe_interaction_send(interaction, embed=ranking_embed(interaction.guild), ephemeral=True)
 
 class XpInfoView(discord.ui.View):
-    def __init__(self, bot_instance):
+    def __init__(self, bot_instance: XPBot):
         super().__init__(timeout=None)
         self.bot = bot_instance
 
@@ -2516,7 +3176,7 @@ class XpInfoView(discord.ui.View):
         await safe_interaction_send(interaction, embed=crate_history_embed(interaction.user, history), ephemeral=True)
 
 class ShopView(discord.ui.View):
-    def __init__(self, bot_instance):
+    def __init__(self, bot_instance: XPBot):
         super().__init__(timeout=None)
         self.bot = bot_instance
 
@@ -2613,63 +3273,6 @@ class ChatModerationPanelView(discord.ui.View):
         )
         embed.add_field(name="Sterowanie", value="Kliknij przycisk, aby włączyć lub wyłączyć moderację czata głównego.", inline=False)
         await interaction.response.edit_message(embed=embed, view=ChatModerationPanelView())
-
-
-
-# =========================================================
-# BOT
-# =========================================================
-class XPBot(commands.Bot):
-    def __init__(self):
-        intents = discord.Intents.default()
-        intents.guilds = True
-        intents.members = True
-        intents.messages = True
-        intents.message_content = True
-        intents.voice_states = True
-        super().__init__(command_prefix="!", intents=intents)
-        self.vc_active_since = {}
-        self.panel_refresh_cache = {}
-        self.betting_system_channels = {}
-
-    async def setup_hook(self) -> None:
-        try:
-            self.add_view(ShopView(self))
-        except Exception:
-            pass
-        try:
-            self.add_view(PointsView(self))
-        except Exception:
-            pass
-        try:
-            self.add_view(RankingView(self))
-        except Exception:
-            pass
-        try:
-            self.add_view(XpInfoView(self))
-        except Exception:
-            pass
-        try:
-            self.add_view(ChatModerationPanelView())
-        except Exception:
-            pass
-
-
-bot = XPBot()
-
-
-def is_active_for_vc(member: discord.Member) -> bool:
-    if member.bot:
-        return False
-    if member.voice is None or member.voice.channel is None:
-        return False
-    if getattr(member.voice, "afk", False):
-        return False
-    if getattr(member.voice, "self_deaf", False):
-        return False
-    if getattr(member.voice, "deaf", False):
-        return False
-    return True
 
 
 # =========================================================
