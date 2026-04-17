@@ -44,6 +44,9 @@ BETTING_AUTO_CHANNELS = {
     "betting_bets": "🧾・typy",
     "betting_ranking": "🥇・ranking",
     "betting_stats": "📊・staty",
+    "betting_results": "📊・wyniki-meczow",
+    "betting_finished": "📜・zakonczone-mecze",
+    "betting_scorers": "⚽・strzelcy",
 }
 
 LEGEND_TEXT_CHANNEL_ID = 1490791025671803013 # 💎・legenda-czat
@@ -540,6 +543,36 @@ def init_db() -> None:
                 potential_win INTEGER NOT NULL,
                 created_at BIGINT NOT NULL,
                 PRIMARY KEY (guild_id, match_id, user_id)
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS betting_scorer_bets (
+                id BIGSERIAL PRIMARY KEY,
+                guild_id BIGINT NOT NULL,
+                match_id BIGINT NOT NULL,
+                user_id BIGINT NOT NULL,
+                scorer_name TEXT NOT NULL,
+                stake INTEGER NOT NULL,
+                potential_win INTEGER NOT NULL,
+                status TEXT NOT NULL DEFAULT 'open',
+                created_at BIGINT NOT NULL,
+                settled_at BIGINT,
+                UNIQUE(guild_id, match_id, user_id, scorer_name)
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS betting_scorer_bets (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                match_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                scorer_name TEXT NOT NULL,
+                stake INTEGER NOT NULL,
+                potential_win INTEGER NOT NULL,
+                status TEXT NOT NULL DEFAULT 'open',
+                created_at INTEGER NOT NULL,
+                settled_at INTEGER,
+                UNIQUE(guild_id, match_id, user_id, scorer_name)
             )
         """)
         cur.execute("""
@@ -2435,6 +2468,125 @@ def betting_list_embed(rows: list[dict]) -> discord.Embed:
     return embed
 
 
+def normalize_scorer_name(name: str) -> str:
+    return " ".join((name or "").strip().lower().split())
+
+
+def get_scorer_bet_odds(match_row: dict, scorer_name: str) -> float:
+    base = max(float(match_row.get("odds_home") or 2.2), float(match_row.get("odds_draw") or 3.2), float(match_row.get("odds_away") or 2.2))
+    extra = min(4.5, max(1.3, len(normalize_scorer_name(scorer_name)) * 0.08))
+    return round(min(12.0, base + extra), 2)
+
+
+def create_scorer_bet(guild_id: int, match_id: int, user_id: int, scorer_name: str, stake: int, potential_win: int) -> bool:
+    ensure_user_row(guild_id, user_id)
+    conn = db_connect()
+    cur = conn.cursor()
+    now_ts = int(time.time())
+    try:
+        if USING_POSTGRES:
+            cur.execute("""
+                INSERT INTO betting_scorer_bets (guild_id, match_id, user_id, scorer_name, stake, potential_win, status, created_at)
+                VALUES (%s, %s, %s, %s, %s, %s, 'open', %s)
+                ON CONFLICT (guild_id, match_id, user_id, scorer_name) DO NOTHING
+            """, (guild_id, match_id, user_id, scorer_name, int(stake), int(potential_win), now_ts))
+        else:
+            cur.execute("""
+                INSERT OR IGNORE INTO betting_scorer_bets (guild_id, match_id, user_id, scorer_name, stake, potential_win, status, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, 'open', ?)
+            """, (guild_id, match_id, user_id, scorer_name, int(stake), int(potential_win), now_ts))
+        inserted = cur.rowcount > 0
+        conn.commit()
+        return inserted
+    finally:
+        conn.close()
+
+
+def list_user_scorer_bets(guild_id: int, user_id: int, limit: int = 20) -> list[dict]:
+    conn = db_connect()
+    cur = conn.cursor()
+    cur.execute(sql("""
+        SELECT s.*, m.home_team, m.away_team, m.start_ts
+        FROM betting_scorer_bets s
+        JOIN betting_matches m
+          ON s.guild_id = m.guild_id AND s.match_id = m.match_id
+        WHERE s.guild_id = ? AND s.user_id = ?
+        ORDER BY m.start_ts DESC, s.created_at DESC
+        LIMIT ?
+    """), (guild_id, user_id, limit))
+    rows = cur.fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+
+def list_open_scorer_bets_for_match(guild_id: int, match_id: int) -> list[dict]:
+    conn = db_connect()
+    cur = conn.cursor()
+    cur.execute(sql("""
+        SELECT *
+        FROM betting_scorer_bets
+        WHERE guild_id = ? AND match_id = ? AND status = 'open'
+        ORDER BY created_at ASC
+    """), (guild_id, match_id))
+    rows = cur.fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+
+def settle_scorer_bets(guild_id: int, match_id: int, scorers_text: str) -> tuple[int, int]:
+    scorers = [normalize_scorer_name(x) for x in (scorers_text or "").split(",") if x.strip()]
+    scorer_set = set(scorers)
+
+    conn = db_connect()
+    cur = conn.cursor()
+    cur.execute(sql("""
+        SELECT *
+        FROM betting_scorer_bets
+        WHERE guild_id = ? AND match_id = ? AND status = 'open'
+    """), (guild_id, match_id))
+    bets = [dict(row) for row in cur.fetchall()]
+
+    winners = 0
+    total_paid = 0
+    now_ts = int(time.time())
+
+    for bet in bets:
+        won = normalize_scorer_name(str(bet["scorer_name"])) in scorer_set
+        payout = int(bet["potential_win"]) if won else 0
+        if won:
+            add_points(guild_id, int(bet["user_id"]), payout)
+            winners += 1
+            total_paid += payout
+
+        cur.execute(sql("""
+            UPDATE betting_scorer_bets
+            SET status = 'settled', settled_at = ?
+            WHERE id = ?
+        """), (now_ts, int(bet["id"])))
+
+    conn.commit()
+    conn.close()
+    return winners, total_paid
+
+
+def scorer_bets_embed(rows: list[dict]) -> discord.Embed:
+    embed = discord.Embed(title="⚽ Twoje typy strzelców", color=discord.Color.orange())
+    if not rows:
+        embed.description = "Nie masz jeszcze typów na strzelców."
+        return embed
+
+    lines = []
+    for row in rows[:15]:
+        status_map = {"open": "otwarte", "settled": "rozliczone"}
+        lines.append(
+            f"**#{row['match_id']}** | {row['home_team']} vs {row['away_team']}\n"
+            f"Strzelec: **{row['scorer_name']}** | stawka: **{row['stake']} pkt** | "
+            f"wygrana: **{row['potential_win']} pkt** | status: **{status_map.get(str(row['status']), str(row['status']))}**"
+        )
+    embed.description = "\n\n".join(lines)[:4000]
+    return embed
+
+
 def my_bets_embed(rows: list[dict]) -> discord.Embed:
     embed = discord.Embed(title="🎯 Twoje typy", color=discord.Color.gold())
     if not rows:
@@ -3035,6 +3187,83 @@ class BettingPanelView(discord.ui.View):
         await interaction.followup.send(embed=live_results_embed(interaction.guild), ephemeral=True)
 
 
+def betting_results_panel_embed(guild: discord.Guild) -> discord.Embed:
+    rows = list_betting_matches(guild.id, status=None, limit=20)
+    embed = discord.Embed(title="📊 Wyniki meczów", color=discord.Color.blurple())
+
+    live_rows = []
+    for row in rows:
+        live_status = str(row.get("live_status") or "")
+        if row["status"] == "closed" or live_status in {"IN_PLAY", "PAUSED"}:
+            live_rows.append(row)
+
+    if not live_rows:
+        embed.description = "Brak trwających meczów."
+        return embed
+
+    lines = []
+    for row in live_rows[:10]:
+        home_score = row.get("home_score")
+        away_score = row.get("away_score")
+        if home_score is None or away_score is None:
+            score_txt = "vs"
+        else:
+            score_txt = f"{int(home_score)}:{int(away_score)}"
+        lines.append(
+            f"**#{row['match_id']}** | {row['home_team']} {score_txt} {row['away_team']}\n"
+            f"Status: **{row.get('live_status') or row['status']}** | Liga: **{row.get('competition_name') or row.get('competition_code') or 'brak'}**"
+        )
+    embed.description = "\n\n".join(lines)[:4000]
+    return embed
+
+
+def betting_finished_panel_embed(guild: discord.Guild) -> discord.Embed:
+    rows = list_betting_matches(guild.id, status="settled", limit=15)
+    embed = discord.Embed(title="📜 Zakończone mecze", color=discord.Color.dark_gold())
+    if not rows:
+        embed.description = "Brak zakończonych meczów."
+        return embed
+
+    lines = []
+    for row in rows[:10]:
+        home_score = row.get("home_score")
+        away_score = row.get("away_score")
+        if home_score is None or away_score is None:
+            score_txt = "brak"
+        else:
+            score_txt = f"{int(home_score)}:{int(away_score)}"
+        lines.append(
+            f"**#{row['match_id']}** | {row['home_team']} vs {row['away_team']}\n"
+            f"Wynik: **{score_txt}** | 1X2: **{row.get('result') or 'brak'}** | Liga: **{row.get('competition_name') or row.get('competition_code') or 'brak'}**"
+        )
+    embed.description = "\n\n".join(lines)[:4000]
+    return embed
+
+
+def betting_scorers_panel_embed(guild: discord.Guild) -> discord.Embed:
+    panel_channel_id = get_betting_scorers_channel_id(guild.id)
+    rows = list_betting_matches(guild.id, status="open", limit=10)
+    embed = discord.Embed(
+        title="⚽ Obstawianie strzelców",
+        description="Tutaj możesz obstawiać, który zawodnik strzeli gola w wybranym meczu.",
+        color=discord.Color.orange()
+    )
+    if panel_channel_id:
+        embed.add_field(name="Kanał", value=f"<#{panel_channel_id}>", inline=True)
+    embed.add_field(name="Komendy", value="`/obstaw_strzelca` • `/moje_typy_strzelcow` • `/rozlicz_strzelcow`", inline=False)
+    embed.add_field(name="Info", value="Rozliczenie strzelców jest ręczne — wpisujesz listę strzelców po meczu oddzieloną przecinkami.", inline=False)
+
+    if rows:
+        sample = []
+        for row in rows[:8]:
+            sample.append(f"**#{row['match_id']}** | {row['home_team']} vs {row['away_team']}")
+        embed.add_field(name="Mecze do typowania strzelców", value="\n".join(sample), inline=False)
+    else:
+        embed.add_field(name="Mecze do typowania strzelców", value="Aktualnie brak otwartych meczów.", inline=False)
+
+    return embed
+
+
 async def refresh_betting_panel(guild: discord.Guild, *, force: bool = False) -> None:
     now_ts = time.time()
     cache_key = (guild.id, "betting")
@@ -3064,6 +3293,12 @@ async def refresh_betting_side_panels(guild: discord.Guild, *, force: bool = Fal
     await ensure_panel_message(guild, "betting_bets", betting_bets_panel_embed(guild), None)
     await ensure_panel_message(guild, "betting_ranking", betting_ranking_panel_embed(guild), None)
     await ensure_panel_message(guild, "betting_stats", betting_stats_panel_embed(guild), None)
+    await ensure_panel_message(guild, "betting_results", betting_results_panel_embed(guild), None)
+    await ensure_panel_message(guild, "betting_finished", betting_finished_panel_embed(guild), None)
+    await ensure_panel_message(guild, "betting_scorers", betting_scorers_panel_embed(guild), None)
+    await ensure_panel_message(guild, "betting_results", betting_results_panel_embed(guild), None)
+    await ensure_panel_message(guild, "betting_finished", betting_finished_panel_embed(guild), None)
+    await ensure_panel_message(guild, "betting_scorers", betting_scorers_panel_embed(guild), None)
 
 
 # =========================================================
@@ -3411,7 +3646,7 @@ def crate_history_embed(member: discord.Member, history: list[dict]) -> discord.
 
 
 def get_runtime_panel_channel_id(guild_id: int, panel_key: str) -> int | None:
-    if panel_key in {"betting", "betting_live", "betting_bets", "betting_ranking", "betting_stats"}:
+    if panel_key in {"betting", "betting_live", "betting_bets", "betting_ranking", "betting_stats", "betting_results", "betting_finished", "betting_scorers"}:
         channel_map = bot.betting_system_channels.get(guild_id, {})
         return channel_map.get(panel_key)
     return PANEL_CHANNELS.get(panel_key)
@@ -3430,6 +3665,21 @@ def get_betting_live_channel_id(guild_id: int) -> int | None:
 def get_betting_bets_channel_id(guild_id: int) -> int | None:
     channel_map = bot.betting_system_channels.get(guild_id, {})
     return channel_map.get("betting_bets")
+
+
+def get_betting_results_channel_id(guild_id: int) -> int | None:
+    channel_map = bot.betting_system_channels.get(guild_id, {})
+    return channel_map.get("betting_results")
+
+
+def get_betting_finished_channel_id(guild_id: int) -> int | None:
+    channel_map = bot.betting_system_channels.get(guild_id, {})
+    return channel_map.get("betting_finished")
+
+
+def get_betting_scorers_channel_id(guild_id: int) -> int | None:
+    channel_map = bot.betting_system_channels.get(guild_id, {})
+    return channel_map.get("betting_scorers")
 
 
 async def ensure_betting_system_channels(guild: discord.Guild) -> dict[str, int]:
@@ -4313,6 +4563,90 @@ async def zabierz_punkty_kanalu(
     embed.add_field(name="Nowy stan", value=f"{total} pkt", inline=True)
     embed.add_field(name="Powód", value=powod or "Brak", inline=False)
     embed.set_footer(text="Auto naliczanie punktów działa dalej normalnie.")
+    await safe_interaction_send(interaction, embed=embed, ephemeral=True)
+
+
+@bot.tree.command(name="obstaw_strzelca", description="Obstawia strzelca gola w wybranym meczu")
+@app_commands.describe(mecz_id="ID meczu", zawodnik="Nazwisko lub imię i nazwisko strzelca", stawka="Ile punktów chcesz postawić")
+async def obstaw_strzelca(interaction: discord.Interaction, mecz_id: int, zawodnik: str, stawka: int):
+    if interaction.guild is None:
+        await safe_interaction_send(interaction, content="Ta komenda działa tylko na serwerze.", ephemeral=True)
+        return
+
+    scorers_channel_id = get_betting_scorers_channel_id(interaction.guild.id)
+    if scorers_channel_id is not None and interaction.channel_id != scorers_channel_id:
+        await safe_interaction_send(interaction, content=f"❌ Typy strzelców działają tylko w kanale <#{scorers_channel_id}>.", ephemeral=True)
+        return
+
+    scorer_name = zawodnik.strip()
+    if len(scorer_name) < 2:
+        await safe_interaction_send(interaction, content="❌ Podaj poprawne nazwisko strzelca.", ephemeral=True)
+        return
+
+    if stawka < BETTING_MIN_STAKE:
+        await safe_interaction_send(interaction, content=f"❌ Minimalna stawka to {BETTING_MIN_STAKE} pkt.", ephemeral=True)
+        return
+
+    match_row = get_betting_match(interaction.guild.id, mecz_id)
+    if not match_row:
+        await safe_interaction_send(interaction, content="❌ Nie znaleziono meczu.", ephemeral=True)
+        return
+
+    if match_row["status"] != "open":
+        await safe_interaction_send(interaction, content="❌ Ten mecz nie jest już otwarty do obstawiania.", ephemeral=True)
+        return
+
+    if int(match_row["start_ts"]) <= int(time.time()):
+        await safe_interaction_send(interaction, content="❌ Czas obstawiania minął.", ephemeral=True)
+        return
+
+    row = get_points_row(interaction.guild.id, interaction.user.id)
+    total_points = int(row["total_points"]) if row else 0
+    if total_points < stawka:
+        await safe_interaction_send(interaction, content=f"❌ Masz za mało punktów. Stan: {total_points} pkt.", ephemeral=True)
+        return
+
+    odds = get_scorer_bet_odds(match_row, scorer_name)
+    potential_win = int(round(stawka * odds))
+    inserted = create_scorer_bet(interaction.guild.id, mecz_id, interaction.user.id, scorer_name, stawka, potential_win)
+    if not inserted:
+        await safe_interaction_send(interaction, content="❌ Już obstawiłeś tego strzelca w tym meczu.", ephemeral=True)
+        return
+
+    remove_total_points(interaction.guild.id, interaction.user.id, stawka)
+    embed = discord.Embed(title="⚽ Typ strzelca przyjęty", color=discord.Color.orange())
+    embed.add_field(name="Mecz", value=f"#{mecz_id} | {match_row['home_team']} vs {match_row['away_team']}", inline=False)
+    embed.add_field(name="Strzelec", value=scorer_name, inline=True)
+    embed.add_field(name="Stawka", value=f"{stawka} pkt", inline=True)
+    embed.add_field(name="Możliwa wygrana", value=f"{potential_win} pkt", inline=True)
+    await safe_interaction_send(interaction, embed=embed, ephemeral=True)
+
+
+@bot.tree.command(name="moje_typy_strzelcow", description="Pokazuje Twoje typy na strzelców")
+async def moje_typy_strzelcow(interaction: discord.Interaction):
+    if interaction.guild is None:
+        await safe_interaction_send(interaction, content="Ta komenda działa tylko na serwerze.", ephemeral=True)
+        return
+    rows = list_user_scorer_bets(interaction.guild.id, interaction.user.id, limit=20)
+    await safe_interaction_send(interaction, embed=scorer_bets_embed(rows), ephemeral=True)
+
+
+@bot.tree.command(name="rozlicz_strzelcow", description="Ręcznie rozlicza typy strzelców dla meczu")
+@app_commands.checks.has_permissions(manage_guild=True)
+@app_commands.describe(mecz_id="ID meczu", strzelcy="Lista strzelców oddzielona przecinkami, np. Lewandowski, Yamal")
+async def rozlicz_strzelcow(interaction: discord.Interaction, mecz_id: int, strzelcy: str):
+    if interaction.guild is None:
+        await safe_interaction_send(interaction, content="Ta komenda działa tylko na serwerze.", ephemeral=True)
+        return
+
+    winners, total_paid = settle_scorer_bets(interaction.guild.id, mecz_id, strzelcy)
+    await refresh_betting_side_panels(interaction.guild, force=True)
+
+    embed = discord.Embed(title="⚽ Rozliczono typy strzelców", color=discord.Color.green())
+    embed.add_field(name="Mecz", value=f"#{mecz_id}", inline=True)
+    embed.add_field(name="Strzelcy", value=strzelcy or "Brak", inline=False)
+    embed.add_field(name="Wygrani", value=str(winners), inline=True)
+    embed.add_field(name="Wypłacono", value=f"{total_paid} pkt", inline=True)
     await safe_interaction_send(interaction, embed=embed, ephemeral=True)
 
 
