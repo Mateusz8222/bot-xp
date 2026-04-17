@@ -2093,6 +2093,50 @@ def settle_betting_match(guild_id: int, match_id: int, result: str) -> tuple[int
     return winners, total_paid
 
 
+def betting_panel_embed(guild: discord.Guild) -> discord.Embed:
+    rows = list_betting_matches(guild.id, status="open", limit=10)
+    embed = discord.Embed(
+        title="🤑 Obstawianie meczy",
+        description="Kliknij przyciski lub wybierz mecz z listy poniżej.",
+        color=discord.Color.green(),
+    )
+    embed.add_field(name="Minimalna stawka", value=f"{BETTING_MIN_STAKE} pkt", inline=True)
+    panel_channel_id = get_betting_panel_channel_id(guild.id) or BETTING_CHANNEL_ID
+    embed.add_field(name="Kanał", value=f"<#{panel_channel_id}>", inline=True)
+
+    if not rows:
+        embed.add_field(name="Otwarte mecze", value="Aktualnie brak otwartych meczów do obstawiania.", inline=False)
+        return embed
+
+    lines = []
+    for row in rows[:10]:
+        lines.append(
+            f"**#{row['match_id']}** | {row['home_team']} vs {row['away_team']}\n"
+            f"Liga: **{row.get('competition_name') or row.get('competition_code') or 'Ręczny mecz'}** | Start: <t:{int(row['start_ts'])}:R>\n"
+            f"Kursy: **1 {float(row['odds_home']):.2f} / X {float(row['odds_draw']):.2f} / 2 {float(row['odds_away']):.2f}**"
+        )
+
+    chunks = []
+    current = ""
+    for line in lines:
+        block = line if not current else "\n\n" + line
+        if len(current) + len(block) > 1000:
+            if current:
+                chunks.append(current)
+            current = line
+        else:
+            current += block
+    if current:
+        chunks.append(current)
+
+    for idx, chunk in enumerate(chunks, start=1):
+        field_name = "Otwarte mecze" if idx == 1 else f"Otwarte mecze {idx}"
+        embed.add_field(name=field_name, value=chunk, inline=False)
+
+    embed.set_footer(text="Bot sam tworzy kanały obstawiania i aktualizuje panel automatycznie.")
+    return embed
+
+
 def betting_match_embed(match_row: dict) -> discord.Embed:
     status_map = {
         "open": "🟢 Otwarte",
