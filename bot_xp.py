@@ -1480,13 +1480,33 @@ def sync_auto_matches_for_guild(guild: discord.Guild) -> tuple[int, int]:
                 except Exception:
                     pass
 
-            # rozlicz po zakończeniu
+            # rozlicz po zakończeniu albo napraw błędnie rozliczony mecz
             result_pick = normalize_api_result_to_pick(((item.get("score") or {}).get("winner")))
-            if api_status in {"FINISHED", "AWARDED"} and result_pick and existing["status"] != "settled":
+            score_result = derive_result_from_scores(home_score, away_score)
+
+            # Jeśli API podaje wynik bramkowy, ufamy bramkom bardziej niż polu "winner"
+            if score_result is not None:
+                result_pick = score_result
+
+            should_force_settle = (
+                result_pick is not None and
+                home_score is not None and
+                away_score is not None and
+                int(start_ts) <= int(time.time()) - 1800
+            )
+
+            if (api_status in {"FINISHED", "AWARDED", "FT", "AET", "PEN", "COMPLETED"} or should_force_settle) and result_pick:
                 try:
-                    update_match_scores_and_status(guild.id, int(existing["match_id"]), home_score, away_score, live_status, "settled")
-                    settle_betting_match(guild.id, int(existing["match_id"]), result_pick)
-                    updated += 1
+                    changed, _paid = reconcile_settled_match_if_needed(
+                        guild.id,
+                        int(existing["match_id"]),
+                        result_pick,
+                        home_score,
+                        away_score,
+                        live_status,
+                    )
+                    if changed:
+                        updated += 1
                 except Exception:
                     pass
 
@@ -1501,12 +1521,11 @@ def auto_settle_scored_matches_for_guild(guild_id: int) -> tuple[int, int]:
         SELECT *
         FROM betting_matches
         WHERE guild_id = ?
-          AND status != 'settled'
           AND start_ts <= ?
           AND home_score IS NOT NULL
           AND away_score IS NOT NULL
         ORDER BY start_ts ASC
-    """), (guild_id, now_ts - 7200))
+    """), (guild_id, now_ts - 1800))
     rows = [dict(row) for row in cur.fetchall()]
     conn.close()
 
@@ -1518,12 +1537,21 @@ def auto_settle_scored_matches_for_guild(guild_id: int) -> tuple[int, int]:
         if not result:
             continue
         try:
-            winners, paid = settle_betting_match(guild_id, int(row["match_id"]), result)
-            settled_count += 1
-            total_paid += int(paid)
+            changed, paid = reconcile_settled_match_if_needed(
+                guild_id,
+                int(row["match_id"]),
+                result,
+                row.get("home_score"),
+                row.get("away_score"),
+                str(row.get("live_status") or "FINISHED"),
+            )
+            if changed:
+                settled_count += 1
+                total_paid += int(paid)
         except Exception:
             pass
 
+    rebuild_betting_user_stats_for_guild(guild_id)
     return settled_count, total_paid
 
 
@@ -2029,6 +2057,188 @@ def close_betting_match(guild_id: int, match_id: int) -> bool:
     conn.commit()
     conn.close()
     return changed
+
+
+
+def bet_wins_for_outcome(bet_row: dict, result: str, home_score, away_score) -> bool:
+    try:
+        if is_exact_score_pick(bet_row["pick"]):
+            pick_home, pick_away = parse_exact_score_pick(bet_row["pick"])
+            return (
+                home_score is not None and away_score is not None and
+                int(pick_home) == int(home_score) and int(pick_away) == int(away_score)
+            )
+        return str(bet_row["pick"]) == str(result)
+    except Exception:
+        return False
+
+
+def rebuild_betting_user_stats_for_guild(guild_id: int) -> None:
+    conn = db_connect()
+    cur = conn.cursor()
+
+    cur.execute(sql("""
+        SELECT b.*, m.status AS match_status, m.result AS match_result, m.home_score, m.away_score, m.start_ts
+        FROM betting_bets b
+        JOIN betting_matches m
+          ON b.guild_id = m.guild_id AND b.match_id = m.match_id
+        WHERE b.guild_id = ?
+        ORDER BY m.start_ts ASC, b.created_at ASC
+    """), (guild_id,))
+    rows = [dict(row) for row in cur.fetchall()]
+
+    # reset only guild betting stats
+    cur.execute(sql("DELETE FROM betting_user_stats WHERE guild_id = ?"), (guild_id,))
+
+    stats = {}
+    now_ts = int(time.time())
+
+    for row in rows:
+        user_id = int(row["user_id"])
+        s = stats.setdefault(user_id, {
+            "total_bets": 0,
+            "wins": 0,
+            "losses": 0,
+            "total_staked": 0,
+            "total_won": 0,
+            "current_streak": 0,
+            "best_streak": 0,
+            "biggest_win": 0,
+            "best_odds": 0.0,
+        })
+
+        stake = int(row.get("stake") or 0)
+        potential_win = int(row.get("potential_win") or 0)
+        odds = (potential_win / stake) if stake > 0 else 0.0
+
+        s["total_bets"] += 1
+        s["total_staked"] += stake
+        s["best_odds"] = max(float(s["best_odds"]), float(odds))
+
+        if str(row.get("match_status")) == "settled":
+            won = bet_wins_for_outcome(
+                row,
+                str(row.get("match_result") or ""),
+                row.get("home_score"),
+                row.get("away_score"),
+            )
+            if won:
+                s["wins"] += 1
+                s["total_won"] += potential_win
+                s["current_streak"] += 1
+                s["best_streak"] = max(int(s["best_streak"]), int(s["current_streak"]))
+                s["biggest_win"] = max(int(s["biggest_win"]), potential_win)
+            else:
+                s["losses"] += 1
+                s["current_streak"] = 0
+
+    for user_id, s in stats.items():
+        if USING_POSTGRES:
+            cur.execute("""
+                INSERT INTO betting_user_stats (
+                    guild_id, user_id, total_bets, wins, losses, total_staked, total_won,
+                    current_streak, best_streak, biggest_win, best_odds, updated_at
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (guild_id, user_id) DO UPDATE SET
+                    total_bets = EXCLUDED.total_bets,
+                    wins = EXCLUDED.wins,
+                    losses = EXCLUDED.losses,
+                    total_staked = EXCLUDED.total_staked,
+                    total_won = EXCLUDED.total_won,
+                    current_streak = EXCLUDED.current_streak,
+                    best_streak = EXCLUDED.best_streak,
+                    biggest_win = EXCLUDED.biggest_win,
+                    best_odds = EXCLUDED.best_odds,
+                    updated_at = EXCLUDED.updated_at
+            """, (
+                guild_id, user_id, s["total_bets"], s["wins"], s["losses"], s["total_staked"], s["total_won"],
+                s["current_streak"], s["best_streak"], s["biggest_win"], s["best_odds"], now_ts
+            ))
+        else:
+            cur.execute("""
+                INSERT OR REPLACE INTO betting_user_stats (
+                    guild_id, user_id, total_bets, wins, losses, total_staked, total_won,
+                    current_streak, best_streak, biggest_win, best_odds, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                guild_id, user_id, s["total_bets"], s["wins"], s["losses"], s["total_staked"], s["total_won"],
+                s["current_streak"], s["best_streak"], s["biggest_win"], s["best_odds"], now_ts
+            ))
+
+    conn.commit()
+    conn.close()
+
+
+def reconcile_settled_match_if_needed(guild_id: int, match_id: int, new_result: str, new_home_score, new_away_score, live_status: str) -> tuple[bool, int]:
+    conn = db_connect()
+    cur = conn.cursor()
+
+    cur.execute(sql("""
+        SELECT *
+        FROM betting_matches
+        WHERE guild_id = ? AND match_id = ?
+    """), (guild_id, match_id))
+    match_row = fetchone_dict(cur)
+    if not match_row:
+        conn.close()
+        return False, 0
+
+    old_result = str(match_row.get("result") or "")
+    old_home = match_row.get("home_score")
+    old_away = match_row.get("away_score")
+    already_settled = str(match_row.get("status")) == "settled"
+
+    changed = (
+        old_result != str(new_result) or
+        old_home != new_home_score or
+        old_away != new_away_score or
+        str(match_row.get("status")) != "settled"
+    )
+
+    if not changed:
+        conn.close()
+        return False, 0
+
+    cur.execute(sql("""
+        SELECT *
+        FROM betting_bets
+        WHERE guild_id = ? AND match_id = ?
+    """), (guild_id, match_id))
+    bets = [dict(row) for row in cur.fetchall()]
+    conn.close()
+
+    total_delta_paid = 0
+
+    if already_settled:
+        for bet in bets:
+            old_won = bet_wins_for_outcome(bet, old_result, old_home, old_away)
+            new_won = bet_wins_for_outcome(bet, new_result, new_home_score, new_away_score)
+            payout = int(bet.get("potential_win") or 0)
+
+            if old_won and not new_won:
+                remove_total_points(guild_id, int(bet["user_id"]), payout)
+                total_delta_paid -= payout
+            elif new_won and not old_won:
+                add_points(guild_id, int(bet["user_id"]), payout)
+                total_delta_paid += payout
+
+        conn = db_connect()
+        cur = conn.cursor()
+        cur.execute(sql("""
+            UPDATE betting_matches
+            SET home_score = ?, away_score = ?, live_status = ?, status = 'settled', result = ?
+            WHERE guild_id = ? AND match_id = ?
+        """), (new_home_score, new_away_score, live_status, new_result, guild_id, match_id))
+        conn.commit()
+        conn.close()
+
+        rebuild_betting_user_stats_for_guild(guild_id)
+        return True, total_delta_paid
+
+    update_match_scores_and_status(guild_id, match_id, new_home_score, new_away_score, live_status, "settled")
+    _, paid = settle_betting_match(guild_id, match_id, new_result)
+    rebuild_betting_user_stats_for_guild(guild_id)
+    return True, int(paid)
 
 
 def settle_betting_match(guild_id: int, match_id: int, result: str) -> tuple[int, int]:
