@@ -2233,6 +2233,63 @@ def my_bets_embed(rows: list[dict]) -> discord.Embed:
     return embed
 
 
+def live_results_embed(guild: discord.Guild) -> discord.Embed:
+    rows = list_betting_matches(guild.id, status=None, limit=30)
+    embed = discord.Embed(title="🔴 Live wyniki meczów", color=discord.Color.red())
+
+    live_rows = []
+    finished_rows = []
+    now_ts = int(time.time())
+
+    for row in rows:
+        live_status = str(row.get("live_status") or "")
+        if row["status"] == "closed" or live_status in {"IN_PLAY", "PAUSED"}:
+            live_rows.append(row)
+        elif row["status"] == "settled":
+            finished_rows.append(row)
+
+    lines = []
+    for row in live_rows[:LIVE_RESULTS_LIMIT]:
+        live_status = str(row.get("live_status") or "")
+        if live_status in {"TIMED", "SCHEDULED", "POSTPONED"} and row["status"] == "open":
+            score_part = "vs"
+        else:
+            home_score = row.get("home_score")
+            away_score = row.get("away_score")
+            if home_score is None or away_score is None:
+                score_part = "vs"
+            else:
+                score_part = f"{int(home_score)}:{int(away_score)}"
+        lines.append(
+            f"**#{row['match_id']}** | {row['home_team']} {score_part} {row['away_team']}\n"
+            f"Live: **{row.get('live_status') or row['status']}** | Liga: **{row.get('competition_name') or row.get('competition_code') or 'brak'}**"
+        )
+
+    if not lines:
+        soon = [r for r in rows if r["status"] == "open" and int(r["start_ts"]) >= now_ts]
+        for row in soon[:LIVE_RESULTS_LIMIT]:
+            lines.append(
+                f"**#{row['match_id']}** | {row['home_team']} vs {row['away_team']}\n"
+                f"Start: <t:{int(row['start_ts'])}:R> | Liga: **{row.get('competition_name') or row.get('competition_code') or 'brak'}**"
+            )
+
+    if finished_rows:
+        tail = []
+        for row in finished_rows[:3]:
+            home_score = row.get("home_score")
+            away_score = row.get("away_score")
+            if home_score is None or away_score is None:
+                score_txt = "brak"
+            else:
+                score_txt = f"{int(home_score)}:{int(away_score)}"
+            tail.append(f"FT | **{row['home_team']} {score_txt} {row['away_team']}**")
+        embed.add_field(name="Ostatnio zakończone", value="\n".join(tail), inline=False)
+
+    desc = "\n\n".join(lines) if lines else "Brak aktywnych lub nadchodzących meczów."
+    embed.description = desc[:4000]
+    return embed
+
+
 class BetStakeModal(discord.ui.Modal, title="🎯 Postaw zakład"):
     stake = discord.ui.TextInput(label="Stawka w punktach", placeholder="Np. 100", required=True, max_length=10)
 
