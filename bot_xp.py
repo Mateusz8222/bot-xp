@@ -3043,6 +3043,16 @@ async def safe_interaction_send(
     except discord.InteractionResponded:
         await interaction.followup.send(**kwargs)
 
+
+async def safe_defer_interaction(interaction: discord.Interaction, *, ephemeral: bool = True) -> bool:
+    try:
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=ephemeral)
+        return True
+    except (discord.NotFound, discord.HTTPException):
+        return False
+
+
 def get_member_multiplier(member: discord.Member) -> float:
     role_ids = {role.id for role in member.roles}
     if LEGEND_ROLE_ID in role_ids:
@@ -4406,15 +4416,17 @@ async def auto_rozlicz_mecze(interaction: discord.Interaction):
         await safe_interaction_send(interaction, content="Ta komenda działa tylko na serwerze.", ephemeral=True)
         return
 
-    await interaction.response.defer(ephemeral=True)
+    deferred = await safe_defer_interaction(interaction, ephemeral=True)
     settled_count, total_paid = await asyncio.to_thread(auto_settle_scored_matches_for_guild, interaction.guild.id)
     await refresh_betting_panel(interaction.guild, force=True)
     await refresh_live_results_panel(interaction.guild, force=True)
     await refresh_betting_side_panels(interaction.guild, force=True)
-    await interaction.followup.send(
-        f"✅ Auto rozliczenie zakończone. Rozliczono meczów: **{settled_count}**, wypłacono łącznie: **{total_paid} pkt**.",
-        ephemeral=True
-    )
+
+    message = f"✅ Auto rozliczenie zakończone. Rozliczono meczów: **{settled_count}**, wypłacono łącznie: **{total_paid} pkt**."
+    if deferred:
+        await interaction.followup.send(message, ephemeral=True)
+    else:
+        await safe_interaction_send(interaction, content=message, ephemeral=True)
 
 
 @bot.tree.command(name="sync_mecze_auto", description="Ręcznie pobiera mecze z API i odświeża panele obstawiania")
@@ -4424,20 +4436,28 @@ async def sync_mecze_auto(interaction: discord.Interaction):
         await safe_interaction_send(interaction, content="Ta komenda działa tylko na serwerze.", ephemeral=True)
         return
 
-    await interaction.response.defer(ephemeral=True)
+    deferred = await safe_defer_interaction(interaction, ephemeral=True)
 
     if not FOOTBALL_DATA_API_KEY:
         await safe_interaction_send(interaction, content="❌ Brak FOOTBALL_DATA_API_KEY w Railway / env.", ephemeral=True)
         return
 
     created, updated = await asyncio.to_thread(sync_auto_matches_for_guild, interaction.guild)
+    settled_count, total_paid = await asyncio.to_thread(auto_settle_scored_matches_for_guild, interaction.guild.id)
+
     await refresh_betting_panel(interaction.guild, force=True)
     await refresh_live_results_panel(interaction.guild, force=True)
-    await safe_interaction_send(
-        interaction,
-        content=f"✅ Synchronizacja zakończona. Dodano: **{created}**, zaktualizowano / zamknięto / rozliczono: **{updated}**.",
-        ephemeral=True
+    await refresh_betting_side_panels(interaction.guild, force=True)
+
+    message = (
+        f"✅ Synchronizacja zakończona. Dodano: **{created}**, "
+        f"zaktualizowano / zamknięto / rozliczono: **{updated}**. "
+        f"Dodatkowo auto-rozliczenie: **{settled_count}** meczów, wypłacono **{total_paid} pkt**."
     )
+    if deferred:
+        await interaction.followup.send(message, ephemeral=True)
+    else:
+        await safe_interaction_send(interaction, content=message, ephemeral=True)
 
 
 @bot.tree.command(name="ranking_typerow", description="Pokazuje ranking typerów")
