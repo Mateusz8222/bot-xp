@@ -1264,8 +1264,10 @@ def derive_result_from_scores(home_score, away_score) -> str | None:
 
 
 def extract_api_final_scores(item: dict) -> tuple[int | None, int | None]:
-    score = (item.get("score") or {})
-    for key in ("fullTime", "extraTime", "regularTime", "penalties", "halfTime"):
+    score = item.get("score") or {}
+
+    # Bierzemy tylko końcowe źródła wyniku.
+    for key in ("fullTime", "extraTime", "penalties"):
         block = score.get(key) or {}
         home_raw = block.get("home")
         away_raw = block.get("away")
@@ -1274,6 +1276,7 @@ def extract_api_final_scores(item: dict) -> tuple[int | None, int | None]:
                 return int(home_raw), int(away_raw)
             except Exception:
                 continue
+
     return None, None
 
 def map_api_status_to_local(status: str, start_ts: int) -> str:
@@ -1511,6 +1514,67 @@ def sync_auto_matches_for_guild(guild: discord.Guild) -> tuple[int, int]:
                     pass
 
     return created, updated
+
+
+
+def force_repair_match_result(guild_id: int, match_id: int, home_score: int, away_score: int) -> tuple[bool, int]:
+    result = derive_result_from_scores(home_score, away_score)
+    if result is None:
+        return False, 0
+
+    changed, paid = reconcile_settled_match_if_needed(
+        guild_id,
+        match_id,
+        result,
+        int(home_score),
+        int(away_score),
+        "FINISHED",
+    )
+    rebuild_betting_user_stats_for_guild(guild_id)
+    return changed, int(paid)
+
+
+def repair_finished_matches_from_api_for_guild(guild: discord.Guild) -> tuple[int, int]:
+    if not FOOTBALL_DATA_API_KEY or not AUTO_FETCH_MATCHES_ENABLED:
+        return (0, 0)
+
+    today = datetime.now(timezone.utc).date()
+    date_from = (today - timedelta(days=7)).isoformat()
+    date_to = (today + timedelta(days=1)).isoformat()
+
+    repaired = 0
+    total_paid_delta = 0
+
+    for competition_code in FOOTBALL_DATA_COMPETITIONS:
+        try:
+            matches = fetch_football_data_matches_for_competition(competition_code, date_from, date_to)
+        except Exception:
+            continue
+
+        for item in matches:
+            api_status = str(item.get("status") or "").upper()
+            if api_status not in {"FINISHED", "AWARDED"}:
+                continue
+
+            ext_id = f"fd:{item.get('id')}"
+            existing = get_match_by_external_id(guild.id, ext_id)
+            if not existing:
+                continue
+
+            home_score, away_score = extract_api_final_scores(item)
+            if home_score is None or away_score is None:
+                continue
+
+            try:
+                changed, paid = force_repair_match_result(guild.id, int(existing["match_id"]), int(home_score), int(away_score))
+                if changed:
+                    repaired += 1
+                    total_paid_delta += int(paid)
+            except Exception:
+                continue
+
+    rebuild_betting_user_stats_for_guild(guild.id)
+    return repaired, total_paid_delta
 
 
 def auto_settle_scored_matches_for_guild(guild_id: int) -> tuple[int, int]:
@@ -4409,6 +4473,32 @@ async def reset_warnow(interaction: discord.Interaction, uzytkownik: discord.Mem
 
 
 
+@bot.tree.command(name="napraw_mecze", description="Naprawia błędnie rozliczone zakończone mecze na podstawie finalnych wyników z API")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def napraw_mecze(interaction: discord.Interaction):
+    if interaction.guild is None:
+        await safe_interaction_send(interaction, content="Ta komenda działa tylko na serwerze.", ephemeral=True)
+        return
+
+    deferred = await safe_defer_interaction(interaction, ephemeral=True)
+    repaired_count, repaired_paid = await asyncio.to_thread(repair_finished_matches_from_api_for_guild, interaction.guild)
+    settled_count, total_paid = await asyncio.to_thread(auto_settle_scored_matches_for_guild, interaction.guild.id)
+
+    await refresh_betting_panel(interaction.guild, force=True)
+    await refresh_live_results_panel(interaction.guild, force=True)
+    await refresh_betting_side_panels(interaction.guild, force=True)
+
+    message = (
+        f"🛠️ Naprawa zakończona. Poprawiono meczów: **{repaired_count}**, "
+        f"korekta punktów: **{repaired_paid} pkt**. "
+        f"Dodatkowo auto-rozliczono: **{settled_count}** meczów, wypłacono **{total_paid} pkt**."
+    )
+    if deferred:
+        await interaction.followup.send(message, ephemeral=True)
+    else:
+        await safe_interaction_send(interaction, content=message, ephemeral=True)
+
+
 @bot.tree.command(name="auto_rozlicz_mecze", description="Wymusza auto rozliczenie zakończonych meczów z zapisanym wynikiem")
 @app_commands.checks.has_permissions(manage_guild=True)
 async def auto_rozlicz_mecze(interaction: discord.Interaction):
@@ -4443,6 +4533,7 @@ async def sync_mecze_auto(interaction: discord.Interaction):
         return
 
     created, updated = await asyncio.to_thread(sync_auto_matches_for_guild, interaction.guild)
+    repaired_count, repaired_paid = await asyncio.to_thread(repair_finished_matches_from_api_for_guild, interaction.guild)
     settled_count, total_paid = await asyncio.to_thread(auto_settle_scored_matches_for_guild, interaction.guild.id)
 
     await refresh_betting_panel(interaction.guild, force=True)
@@ -4452,6 +4543,7 @@ async def sync_mecze_auto(interaction: discord.Interaction):
     message = (
         f"✅ Synchronizacja zakończona. Dodano: **{created}**, "
         f"zaktualizowano / zamknięto / rozliczono: **{updated}**. "
+        f"Naprawiono z API: **{repaired_count}** meczów, korekta punktów: **{repaired_paid} pkt**. "
         f"Dodatkowo auto-rozliczenie: **{settled_count}** meczów, wypłacono **{total_paid} pkt**."
     )
     if deferred:
@@ -4753,6 +4845,29 @@ async def zamknij_obstawianie(interaction: discord.Interaction, mecz_id: int):
     await refresh_betting_panel(interaction.guild, force=True)
     await refresh_live_results_panel(interaction.guild, force=True)
     await refresh_betting_side_panels(interaction.guild, force=True)
+
+
+@bot.tree.command(name="napraw_mecz_recznie", description="Ręcznie naprawia wynik i rozliczenie pojedynczego meczu")
+@app_commands.checks.has_permissions(manage_guild=True)
+@app_commands.describe(mecz_id="ID meczu", gole_gospodarzy="Finalne gole gospodarzy", gole_gosci="Finalne gole gości")
+async def napraw_mecz_recznie(interaction: discord.Interaction, mecz_id: int, gole_gospodarzy: int, gole_gosci: int):
+    if interaction.guild is None:
+        await safe_interaction_send(interaction, content="Ta komenda działa tylko na serwerze.", ephemeral=True)
+        return
+
+    deferred = await safe_defer_interaction(interaction, ephemeral=True)
+    changed, paid = await asyncio.to_thread(force_repair_match_result, interaction.guild.id, mecz_id, gole_gospodarzy, gole_gosci)
+
+    await refresh_betting_panel(interaction.guild, force=True)
+    await refresh_live_results_panel(interaction.guild, force=True)
+    await refresh_betting_side_panels(interaction.guild, force=True)
+
+    result = derive_result_from_scores(gole_gospodarzy, gole_gosci) or "brak"
+    message = f"🛠️ Naprawa meczu #{mecz_id} zakończona. Zmiana: **{changed}**, wynik: **{gole_gospodarzy}:{gole_gosci} ({result})**, korekta punktów: **{paid} pkt**."
+    if deferred:
+        await interaction.followup.send(message, ephemeral=True)
+    else:
+        await safe_interaction_send(interaction, content=message, ephemeral=True)
 
 
 @bot.tree.command(name="wynik_dokladny_meczu", description="Ustawia dokładny wynik meczu i rozlicza także zakłady na dokładny wynik")
