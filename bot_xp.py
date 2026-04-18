@@ -3188,32 +3188,80 @@ class BettingPanelView(discord.ui.View):
 
 
 def betting_results_panel_embed(guild: discord.Guild) -> discord.Embed:
-    rows = list_betting_matches(guild.id, status=None, limit=20)
+    rows = list_betting_matches(guild.id, status=None, limit=40)
     embed = discord.Embed(title="📊 Wyniki meczów", color=discord.Color.blurple())
+    now_ts = int(time.time())
 
     live_rows = []
-    for row in rows:
-        live_status = str(row.get("live_status") or "")
-        if row["status"] == "closed" or live_status in {"IN_PLAY", "PAUSED"}:
-            live_rows.append(row)
+    upcoming_rows = []
+    finished_rows = []
 
-    if not live_rows:
-        embed.description = "Brak trwających meczów."
+    for row in rows:
+        live_status = str(row.get("live_status") or "").upper()
+        status = str(row.get("status") or "").lower()
+
+        if status == "closed" or live_status in {"IN_PLAY", "PAUSED", "LIVE", "SUSPENDED"}:
+            live_rows.append(row)
+        elif status == "open" or live_status in {"TIMED", "SCHEDULED", "POSTPONED"}:
+            upcoming_rows.append(row)
+        elif status == "settled":
+            finished_rows.append(row)
+
+    live_rows.sort(key=lambda r: int(r.get("start_ts") or 0))
+    upcoming_rows.sort(key=lambda r: int(r.get("start_ts") or 0))
+    finished_rows.sort(key=lambda r: int(r.get("start_ts") or 0), reverse=True)
+
+    sections = []
+
+    if live_rows:
+        lines = []
+        for row in live_rows[:8]:
+            home_score = row.get("home_score")
+            away_score = row.get("away_score")
+            if home_score is None or away_score is None:
+                score_txt = "vs"
+            else:
+                score_txt = f"{int(home_score)}:{int(away_score)}"
+            lines.append(
+                f"**#{row['match_id']}** | {row['home_team']} {score_txt} {row['away_team']}\n"
+                f"Status: **{row.get('live_status') or row['status']}** | Liga: **{row.get('competition_name') or row.get('competition_code') or 'brak'}**"
+            )
+        sections.append(("🔴 Trwające mecze", "\n\n".join(lines)))
+
+    if upcoming_rows:
+        lines = []
+        for row in upcoming_rows[:8]:
+            start_ts = int(row.get("start_ts") or 0)
+            when_txt = f"<t:{start_ts}:R>" if start_ts >= now_ts else "wkrótce"
+            lines.append(
+                f"**#{row['match_id']}** | {row['home_team']} vs {row['away_team']}\n"
+                f"Start: {when_txt} | Liga: **{row.get('competition_name') or row.get('competition_code') or 'brak'}**"
+            )
+        sections.append(("⏳ Nadchodzące mecze", "\n\n".join(lines)))
+
+    if finished_rows:
+        lines = []
+        for row in finished_rows[:5]:
+            home_score = row.get("home_score")
+            away_score = row.get("away_score")
+            if home_score is None or away_score is None:
+                score_txt = "brak"
+            else:
+                score_txt = f"{int(home_score)}:{int(away_score)}"
+            lines.append(
+                f"**#{row['match_id']}** | {row['home_team']} vs {row['away_team']}\n"
+                f"Wynik: **{score_txt}** | 1X2: **{row.get('result') or 'brak'}**"
+            )
+        sections.append(("📜 Ostatnio zakończone", "\n\n".join(lines)))
+
+    if not sections:
+        embed.description = "Brak meczów do pokazania."
         return embed
 
-    lines = []
-    for row in live_rows[:10]:
-        home_score = row.get("home_score")
-        away_score = row.get("away_score")
-        if home_score is None or away_score is None:
-            score_txt = "vs"
-        else:
-            score_txt = f"{int(home_score)}:{int(away_score)}"
-        lines.append(
-            f"**#{row['match_id']}** | {row['home_team']} {score_txt} {row['away_team']}\n"
-            f"Status: **{row.get('live_status') or row['status']}** | Liga: **{row.get('competition_name') or row.get('competition_code') or 'brak'}**"
-        )
-    embed.description = "\n\n".join(lines)[:4000]
+    for name, value in sections:
+        embed.add_field(name=name, value=value[:1024], inline=False)
+
+    embed.set_footer(text="Kanał pokazuje trwające, nadchodzące i ostatnio zakończone mecze.")
     return embed
 
 
