@@ -418,12 +418,33 @@ SHOP_ITEMS = {
 }
 
 PANEL_CHANNELS = {
+    # 📊 System punktów kanału / XP
     "points": POINTS_CHANNEL_ID,
+    "punkty_kanalu": POINTS_CHANNEL_ID,
     "ranking": RANKING_CHANNEL_ID,
     "xpinfo": XPINFO_CHANNEL_ID,
+
+    # 🛒 Sklep punktów kanału
     "shop": SHOP_CHANNEL_ID,
+    "sklep_punktow": SHOP_CHANNEL_ID,
+    "shop_log": SHOP_LOG_CHANNEL_ID,
+
+    # 🛡️ Administracja
+    "admin_log": ADMIN_LOG_CHANNEL_ID,
+
+    # 💎 Legenda / premium
+    "legend_text": LEGEND_TEXT_CHANNEL_ID,
+    "legend_vc": LEGEND_VC_CHANNEL_ID,
+
+    # 🎯 Obstawianie
     "betting": BETTING_CHANNEL_ID,
     "betting_live": BETTING_LIVE_CHANNEL_ID,
+    "betting_bets": BETTING_CHANNEL_ID,
+    "betting_ranking": BETTING_CHANNEL_ID,
+    "betting_stats": BETTING_CHANNEL_ID,
+    "betting_results": BETTING_CHANNEL_ID,
+    "betting_finished": BETTING_CHANNEL_ID,
+    "betting_scorers": BETTING_CHANNEL_ID,
 }
 
 # =========================================================
@@ -1815,7 +1836,8 @@ def get_total_multiplier(member: discord.Member) -> float:
     return get_member_multiplier(member) * get_active_xp_boost(member.guild.id, member.id)
 
 async def send_shop_log(guild: discord.Guild, embed: discord.Embed) -> None:
-    channel = guild.get_channel(SHOP_LOG_CHANNEL_ID)
+    channel_id = get_runtime_panel_channel_id(guild.id, "shop_log") or SHOP_LOG_CHANNEL_ID
+    channel = guild.get_channel(int(channel_id))
     if channel is None or not isinstance(channel, discord.TextChannel):
         return
     try:
@@ -1824,7 +1846,8 @@ async def send_shop_log(guild: discord.Guild, embed: discord.Embed) -> None:
         pass
 
 async def send_admin_log(guild: discord.Guild, embed: discord.Embed) -> None:
-    channel = guild.get_channel(ADMIN_LOG_CHANNEL_ID)
+    channel_id = get_runtime_panel_channel_id(guild.id, "admin_log") or ADMIN_LOG_CHANNEL_ID
+    channel = guild.get_channel(int(channel_id))
     if channel is None or not isinstance(channel, discord.TextChannel):
         return
     try:
@@ -3496,7 +3519,7 @@ def sanitize_private_channel_name(name: str) -> str:
     return f"{PRIVATE_CHANNEL_PREFIX}{safe[:80]}"
 
 async def create_or_get_private_channel_for_member(guild: discord.Guild, member: discord.Member) -> discord.VoiceChannel:
-    category = discord.utils.get(guild.categories, name=PRIVATE_CHANNEL_CATEGORY_NAME)
+    category = get_runtime_private_category(guild)
     if category is None:
         category = await guild.create_category(PRIVATE_CHANNEL_CATEGORY_NAME, reason="Auto prywatne kanały")
 
@@ -3694,7 +3717,7 @@ def crate_history_embed(member: discord.Member, history: list[dict]) -> discord.
 
 
 def get_runtime_panel_channel_id(guild_id: int, panel_key: str) -> int | None:
-    """Zwraca kanał ustawiony przez /setup, a jeśli go nie ma — domyślny kanał z konfiguracji."""
+    """Najpierw czyta ustawienie z /setup, potem mapę obstawiania, a na końcu stare stałe ID."""
     saved = get_panel_message(guild_id, panel_key)
     if saved:
         try:
@@ -3709,6 +3732,15 @@ def get_runtime_panel_channel_id(guild_id: int, panel_key: str) -> int | None:
             return int(channel_id)
 
     return PANEL_CHANNELS.get(panel_key)
+
+
+def get_runtime_private_category(guild: discord.Guild) -> discord.CategoryChannel | None:
+    category_id = get_runtime_panel_channel_id(guild.id, "private_category")
+    if category_id:
+        category = guild.get_channel(int(category_id))
+        if isinstance(category, discord.CategoryChannel):
+            return category
+    return discord.utils.get(guild.categories, name=PRIVATE_CHANNEL_CATEGORY_NAME)
 
 
 def get_betting_panel_channel_id(guild_id: int) -> int | None:
@@ -3790,7 +3822,7 @@ async def ensure_panel_message(
     saved = get_panel_message(guild.id, panel_key)
     message = None
 
-    if saved and int(saved.get("message_id") or 0) > 0:
+    if saved:
         try:
             message = await channel.fetch_message(int(saved["message_id"]))
         except (discord.NotFound, discord.HTTPException):
@@ -3818,20 +3850,16 @@ async def refresh_all_panels(guild: discord.Guild) -> None:
     await ensure_panel_message(guild, "betting_bets", betting_bets_panel_embed(guild), None)
     await ensure_panel_message(guild, "betting_ranking", betting_ranking_panel_embed(guild), None)
     await ensure_panel_message(guild, "betting_stats", betting_stats_panel_embed(guild), None)
-    await ensure_panel_message(guild, "betting_results", betting_results_panel_embed(guild), None)
-    await ensure_panel_message(guild, "betting_finished", betting_finished_panel_embed(guild), None)
-    await ensure_panel_message(guild, "betting_scorers", betting_scorers_panel_embed(guild), None)
 
 async def process_shop_purchase(interaction: discord.Interaction, item_name: str) -> None:
     if interaction.guild is None:
         await safe_interaction_send(interaction, content="Ta akcja działa tylko na serwerze.", ephemeral=True)
         return
 
-    shop_channel_id = get_runtime_panel_channel_id(interaction.guild.id, "shop")
-    if shop_channel_id is not None and interaction.channel_id != shop_channel_id:
+    if interaction.channel_id != SHOP_CHANNEL_ID:
         await safe_interaction_send(
             interaction,
-            content=f"❌ Kupowanie działa tylko w kanale <#{shop_channel_id}>.",
+            content="❌ Kupowanie działa tylko w kanale 🛒・sklep.",
             ephemeral=True
         )
         return
@@ -3970,7 +3998,7 @@ async def process_shop_purchase(interaction: discord.Interaction, item_name: str
     if item_key == "auto_prywatny_kanal":
         try:
             existing_channel = None
-            category = discord.utils.get(interaction.guild.categories, name=PRIVATE_CHANNEL_CATEGORY_NAME)
+            category = get_runtime_private_category(interaction.guild)
             if category is not None:
                 expected_name = sanitize_private_channel_name(member.display_name)
                 for ch in category.voice_channels:
@@ -4486,9 +4514,10 @@ async def on_ready():
 
         await refresh_all_panels(guild)
 
-        admin_log_channel = guild.get_channel(ADMIN_LOG_CHANNEL_ID)
+        admin_log_channel_id = get_runtime_panel_channel_id(guild.id, "admin_log") or ADMIN_LOG_CHANNEL_ID
+        admin_log_channel = guild.get_channel(int(admin_log_channel_id))
         if admin_log_channel is None:
-            print(f"⚠️ Nie znaleziono kanału logów administracyjnych na serwerze {guild.name}: {ADMIN_LOG_CHANNEL_ID}")
+            print(f"⚠️ Nie znaleziono kanału logów administracyjnych na serwerze {guild.name}: {admin_log_channel_id}")
 
     if not vc_loop.is_running():
         vc_loop.start()
@@ -4573,115 +4602,6 @@ async def vc_loop():
 @vc_loop.before_loop
 async def before_vc_loop():
     await bot.wait_until_ready()
-
-# =========================================================
-# SETUP KANAŁÓW I BLOKADA KOMEND NA WŁAŚCIWYCH KANAŁACH
-# =========================================================
-SETUP_CHANNEL_LABELS = {
-    "points": "📊 Sprawdzanie punktów",
-    "ranking": "🏆 Ranking",
-    "xpinfo": "📘 Informacje XP",
-    "shop": "🛒 Sklep",
-    "betting": "🎯 Panel obstawiania",
-    "betting_live": "🔴 Wyniki live",
-    "betting_bets": "🧾 Typy",
-    "betting_ranking": "🥇 Ranking typerów",
-    "betting_stats": "📊 Statystyki typerów",
-    "betting_results": "📊 Wyniki meczów",
-    "betting_finished": "📜 Zakończone mecze",
-    "betting_scorers": "⚽ Strzelcy",
-}
-
-COMMAND_CHANNEL_RULES = {
-    # 📊 punkty
-    "punkty": "points",
-    "punkty_uzytkownika": "points",
-
-    # 🏆 ranking XP
-    "ranking": "ranking",
-
-    # 📘 info XP
-    "xpinfo": "xpinfo",
-
-    # 🛒 sklep
-    "sklep": "shop",
-    "kup": "shop",
-    "skrzynki_historia": "shop",
-
-    # 🎯 obstawianie
-    "panel_obstawiania": "betting",
-    "dodaj_mecz": "betting",
-    "lista_meczy": "betting",
-    "obstaw": "betting_bets",
-    "obstaw_dokladny_wynik": "betting_bets",
-    "moje_typy": "betting_bets",
-    "obstaw_strzelca": "betting_scorers",
-    "moje_typy_strzelcow": "betting_scorers",
-
-    # 🔴 live / wyniki
-    "panel_live_mecze": "betting_live",
-    "wynik_meczu": "betting_results",
-    "wynik_dokladny_meczu": "betting_results",
-
-    # 🥇 typerzy
-    "ranking_typerow": "betting_ranking",
-    "profil_typera": "betting_stats",
-    "moje_staty_typerskie": "betting_stats",
-}
-
-ADMIN_COMMANDS_WITHOUT_CHANNEL_LOCK = {
-    "setup",
-    "setup_obstawianie_auto",
-    "odswiez_panele",
-    "dodaj_punkty_kanalu",
-    "zabierz_punkty_kanalu",
-    "panel_moderacji",
-    "moderacja_on",
-    "moderacja_off",
-    "status_moderacji",
-    "warny",
-    "warny_admin",
-    "reset_warnow",
-    "napraw_mecze",
-    "auto_rozlicz_mecze",
-    "sync_mecze_auto",
-    "zamknij_obstawianie",
-    "napraw_mecz_recznie",
-    "rozlicz_strzelcow",
-}
-
-
-def get_allowed_channel_id_for_command(guild_id: int, command_name: str) -> int | None:
-    panel_key = COMMAND_CHANNEL_RULES.get(command_name)
-    if not panel_key:
-        return None
-    return get_runtime_panel_channel_id(guild_id, panel_key)
-
-
-@bot.tree.interaction_check
-async def block_wrong_command_channel(interaction: discord.Interaction) -> bool:
-    if interaction.guild is None or interaction.command is None:
-        return True
-
-    command_name = interaction.command.name
-
-    if command_name in ADMIN_COMMANDS_WITHOUT_CHANNEL_LOCK:
-        return True
-
-    allowed_channel_id = get_allowed_channel_id_for_command(interaction.guild.id, command_name)
-    if allowed_channel_id is None:
-        return True
-
-    if interaction.channel_id == allowed_channel_id:
-        return True
-
-    await safe_interaction_send(
-        interaction,
-        content=f"❌ Tej komendy użyj na kanale <#{allowed_channel_id}>.",
-        ephemeral=True,
-    )
-    return False
-
 
 # =========================================================
 # KOMENDY SLASH
@@ -4828,9 +4748,8 @@ async def punkty(interaction: discord.Interaction):
         await safe_interaction_send(interaction, content="Ta komenda działa tylko na serwerze.", ephemeral=True)
         return
 
-    points_channel_id = get_runtime_panel_channel_id(interaction.guild.id, "points")
-    if points_channel_id is not None and interaction.channel_id != points_channel_id:
-        await safe_interaction_send(interaction, content=f"❌ Użyj tej komendy w kanale <#{points_channel_id}>.", ephemeral=True)
+    if interaction.channel_id != POINTS_CHANNEL_ID:
+        await safe_interaction_send(interaction, content="❌ Użyj tej komendy w kanale 📊・sprawdz-punkty.", ephemeral=True)
         return
 
     row = get_points_row(interaction.guild.id, interaction.user.id)
@@ -4849,9 +4768,8 @@ async def punkty_uzytkownika(interaction: discord.Interaction, uzytkownik: disco
         await safe_interaction_send(interaction, content="Ta komenda działa tylko na serwerze.", ephemeral=True)
         return
 
-    points_channel_id = get_runtime_panel_channel_id(interaction.guild.id, "points")
-    if points_channel_id is not None and interaction.channel_id != points_channel_id:
-        await safe_interaction_send(interaction, content=f"❌ Użyj tej komendy w kanale <#{points_channel_id}>.", ephemeral=True)
+    if interaction.channel_id != POINTS_CHANNEL_ID:
+        await safe_interaction_send(interaction, content="❌ Użyj tej komendy w kanale 📊・sprawdz-punkty.", ephemeral=True)
         return
 
     row = get_points_row(interaction.guild.id, uzytkownik.id)
@@ -4873,22 +4791,16 @@ async def ranking(interaction: discord.Interaction):
         await safe_interaction_send(interaction, content="Ta komenda działa tylko na serwerze.", ephemeral=True)
         return
 
-    ranking_channel_id = get_runtime_panel_channel_id(interaction.guild.id, "ranking")
-    if ranking_channel_id is not None and interaction.channel_id != ranking_channel_id:
-        await safe_interaction_send(interaction, content=f"❌ Użyj tej komendy w kanale <#{ranking_channel_id}>.", ephemeral=True)
+    if interaction.channel_id != RANKING_CHANNEL_ID:
+        await safe_interaction_send(interaction, content="❌ Użyj tej komendy w kanale 🏆・ranking.", ephemeral=True)
         return
 
     await safe_interaction_send(interaction, embed=ranking_embed(interaction.guild))
 
 @bot.tree.command(name="xpinfo", description="Pokazuje zasady punktów")
 async def xpinfo(interaction: discord.Interaction):
-    if interaction.guild is None:
-        await safe_interaction_send(interaction, content="Ta komenda działa tylko na serwerze.", ephemeral=True)
-        return
-
-    xpinfo_channel_id = get_runtime_panel_channel_id(interaction.guild.id, "xpinfo")
-    if xpinfo_channel_id is not None and interaction.channel_id != xpinfo_channel_id:
-        await safe_interaction_send(interaction, content=f"❌ Użyj tej komendy w kanale <#{xpinfo_channel_id}>.", ephemeral=True)
+    if interaction.channel_id != XPINFO_CHANNEL_ID:
+        await safe_interaction_send(interaction, content="❌ Użyj tej komendy w kanale 📘・info-xp.", ephemeral=True)
         return
 
     await safe_interaction_send(interaction, embed=xpinfo_embed())
@@ -4899,9 +4811,8 @@ async def sklep(interaction: discord.Interaction):
         await safe_interaction_send(interaction, content="Ta komenda działa tylko na serwerze.", ephemeral=True)
         return
 
-    shop_channel_id = get_runtime_panel_channel_id(interaction.guild.id, "shop")
-    if shop_channel_id is not None and interaction.channel_id != shop_channel_id:
-        await safe_interaction_send(interaction, content=f"❌ Użyj tej komendy w kanale <#{shop_channel_id}>.", ephemeral=True)
+    if interaction.channel_id != SHOP_CHANNEL_ID:
+        await safe_interaction_send(interaction, content="❌ Użyj tej komendy w kanale 🛒・sklep.", ephemeral=True)
         return
 
     await safe_interaction_send(interaction, embed=shop_embed(), view=ShopView(bot))
@@ -4920,6 +4831,116 @@ async def skrzynki_historia(interaction: discord.Interaction):
     history = get_last_crate_history(interaction.guild.id, interaction.user.id, 5)
     await safe_interaction_send(interaction, embed=crate_history_embed(interaction.user, history), ephemeral=True)
 
+
+
+# =========================================================
+# PEŁNY SETUP KANAŁÓW BOTA
+# =========================================================
+SETUP_CHANNEL_LABELS = {
+    "points": "📊 Punkty kanału / sprawdzanie punktów",
+    "punkty_kanalu": "💰 Punkty kanału",
+    "ranking": "🏆 Ranking punktów",
+    "xpinfo": "📘 Informacje XP",
+    "shop": "🛒 Sklep za punkty kanału",
+    "sklep_punktow": "🛒 Sklep punktów kanału",
+    "shop_log": "📜 Logi sklepu",
+    "admin_log": "🛡️ Logi administracyjne",
+    "legend_text": "💎 Legenda czat",
+    "legend_vc": "🎤 Legenda VC",
+    "private_category": "🔒 Kategoria prywatnych kanałów",
+    "betting": "🎯 Panel obstawiania",
+    "betting_live": "🔴 Wyniki live",
+    "betting_bets": "🧾 Typy",
+    "betting_ranking": "🥇 Ranking typerów",
+    "betting_stats": "📊 Statystyki typerów",
+    "betting_results": "📊 Wyniki meczów",
+    "betting_finished": "📜 Zakończone mecze",
+    "betting_scorers": "⚽ Strzelcy",
+}
+
+
+@bot.tree.command(name="setup", description="Przypisuje kanał albo kategorię do funkcji bota")
+@app_commands.describe(
+    funkcja="Co ma działać na tym kanale/kategorii",
+    kanal="Kanał tekstowy, kanał głosowy albo kategoria"
+)
+@app_commands.choices(funkcja=[
+    app_commands.Choice(name="📊 Punkty kanału / sprawdzanie punktów", value="points"),
+    app_commands.Choice(name="💰 Punkty kanału", value="punkty_kanalu"),
+    app_commands.Choice(name="🏆 Ranking punktów", value="ranking"),
+    app_commands.Choice(name="📘 Informacje XP", value="xpinfo"),
+    app_commands.Choice(name="🛒 Sklep za punkty kanału", value="shop"),
+    app_commands.Choice(name="🛒 Sklep punktów kanału", value="sklep_punktow"),
+    app_commands.Choice(name="📜 Logi sklepu", value="shop_log"),
+    app_commands.Choice(name="🛡️ Logi administracyjne", value="admin_log"),
+    app_commands.Choice(name="💎 Legenda czat", value="legend_text"),
+    app_commands.Choice(name="🎤 Legenda VC", value="legend_vc"),
+    app_commands.Choice(name="🔒 Kategoria prywatnych kanałów", value="private_category"),
+    app_commands.Choice(name="🎯 Panel obstawiania", value="betting"),
+    app_commands.Choice(name="🔴 Wyniki live", value="betting_live"),
+    app_commands.Choice(name="🧾 Typy", value="betting_bets"),
+    app_commands.Choice(name="🥇 Ranking typerów", value="betting_ranking"),
+    app_commands.Choice(name="📊 Statystyki typerów", value="betting_stats"),
+    app_commands.Choice(name="📊 Wyniki meczów", value="betting_results"),
+    app_commands.Choice(name="📜 Zakończone mecze", value="betting_finished"),
+    app_commands.Choice(name="⚽ Strzelcy", value="betting_scorers"),
+])
+@app_commands.checks.has_permissions(manage_guild=True)
+async def setup(
+    interaction: discord.Interaction,
+    funkcja: app_commands.Choice[str],
+    kanal: discord.TextChannel | discord.VoiceChannel | discord.CategoryChannel,
+):
+    if interaction.guild is None:
+        await safe_interaction_send(interaction, content="❌ Ta komenda działa tylko na serwerze.", ephemeral=True)
+        return
+
+    await interaction.response.defer(ephemeral=True)
+
+    panel_key = funkcja.value
+    voice_keys = {"legend_vc"}
+    category_keys = {"private_category"}
+    text_keys = set(SETUP_CHANNEL_LABELS.keys()) - voice_keys - category_keys
+
+    if panel_key in text_keys and not isinstance(kanal, discord.TextChannel):
+        await safe_interaction_send(interaction, content="❌ Do tej funkcji wybierz kanał tekstowy.", ephemeral=True)
+        return
+    if panel_key in voice_keys and not isinstance(kanal, discord.VoiceChannel):
+        await safe_interaction_send(interaction, content="❌ Do tej funkcji wybierz kanał głosowy.", ephemeral=True)
+        return
+    if panel_key in category_keys and not isinstance(kanal, discord.CategoryChannel):
+        await safe_interaction_send(interaction, content="❌ Do tej funkcji wybierz kategorię.", ephemeral=True)
+        return
+
+    keys_to_save = [panel_key]
+    # aliasy: stare komendy dalej korzystają z głównych kluczy
+    if panel_key == "punkty_kanalu":
+        keys_to_save.append("points")
+    if panel_key == "sklep_punktow":
+        keys_to_save.append("shop")
+
+    for key in keys_to_save:
+        save_panel_message(interaction.guild.id, key, kanal.id, 0)
+
+    if panel_key.startswith("betting"):
+        bot.betting_system_channels.setdefault(interaction.guild.id, {})
+        bot.betting_system_channels[interaction.guild.id][panel_key] = kanal.id
+
+    if isinstance(kanal, discord.TextChannel):
+        try:
+            await refresh_all_panels(interaction.guild)
+            await refresh_betting_panel(interaction.guild, force=True)
+            await refresh_live_results_panel(interaction.guild, force=True)
+            await refresh_betting_side_panels(interaction.guild, force=True)
+        except Exception as e:
+            print(f"⚠️ Setup: nie udało się odświeżyć paneli: {e}")
+
+    label = SETUP_CHANNEL_LABELS.get(panel_key, panel_key)
+    await safe_interaction_send(
+        interaction,
+        content=f"✅ Ustawiono **{label}** na: {kanal.mention}",
+        ephemeral=True,
+    )
 
 @bot.tree.command(name="setup_obstawianie_auto", description="Tworzy lub naprawia automatycznie kategorię i kanały obstawiania")
 @app_commands.checks.has_permissions(manage_guild=True)
@@ -5525,59 +5546,6 @@ async def wynik_meczu(interaction: discord.Interaction, mecz_id: int, wynik: str
     await refresh_betting_panel(interaction.guild, force=True)
     await refresh_live_results_panel(interaction.guild, force=True)
     await refresh_betting_side_panels(interaction.guild, force=True)
-
-@bot.tree.command(name="setup", description="Przypisuje kanał do wybranej funkcji bota")
-@app_commands.describe(
-    funkcja="Co ma działać na tym kanale",
-    kanal="Kanał, który ma zostać przypisany"
-)
-@app_commands.choices(funkcja=[
-    app_commands.Choice(name="📊 Sprawdzanie punktów", value="points"),
-    app_commands.Choice(name="🏆 Ranking", value="ranking"),
-    app_commands.Choice(name="📘 Informacje XP", value="xpinfo"),
-    app_commands.Choice(name="🛒 Sklep", value="shop"),
-    app_commands.Choice(name="🎯 Panel obstawiania", value="betting"),
-    app_commands.Choice(name="🔴 Wyniki live", value="betting_live"),
-    app_commands.Choice(name="🧾 Typy", value="betting_bets"),
-    app_commands.Choice(name="🥇 Ranking typerów", value="betting_ranking"),
-    app_commands.Choice(name="📊 Statystyki typerów", value="betting_stats"),
-    app_commands.Choice(name="📊 Wyniki meczów", value="betting_results"),
-    app_commands.Choice(name="📜 Zakończone mecze", value="betting_finished"),
-    app_commands.Choice(name="⚽ Strzelcy", value="betting_scorers"),
-])
-@app_commands.checks.has_permissions(manage_guild=True)
-async def setup(
-    interaction: discord.Interaction,
-    funkcja: app_commands.Choice[str],
-    kanal: discord.TextChannel,
-):
-    if interaction.guild is None:
-        await safe_interaction_send(interaction, content="❌ Ta komenda działa tylko na serwerze.", ephemeral=True)
-        return
-
-    await interaction.response.defer(ephemeral=True)
-
-    panel_key = funkcja.value
-
-    # Zapisujemy kanał. message_id = 0 oznacza: przy następnym odświeżeniu bot utworzy nowy panel.
-    save_panel_message(interaction.guild.id, panel_key, kanal.id, 0)
-
-    if panel_key.startswith("betting"):
-        bot.betting_system_channels.setdefault(interaction.guild.id, {})
-        bot.betting_system_channels[interaction.guild.id][panel_key] = kanal.id
-
-    await refresh_all_panels(interaction.guild)
-    await refresh_betting_panel(interaction.guild, force=True)
-    await refresh_live_results_panel(interaction.guild, force=True)
-    await refresh_betting_side_panels(interaction.guild, force=True)
-
-    label = SETUP_CHANNEL_LABELS.get(panel_key, panel_key)
-    await safe_interaction_send(
-        interaction,
-        content=f"✅ Ustawiono **{label}** na kanale {kanal.mention}. Komendy tej sekcji będą działały tylko tam.",
-        ephemeral=True,
-    )
-
 
 @bot.tree.command(name="odswiez_panele", description="Odświeża wszystkie panele bota")
 @app_commands.checks.has_permissions(manage_guild=True)
